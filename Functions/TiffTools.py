@@ -24,6 +24,7 @@ def plot_tiff(file:str,mask:list=None,cmap:str=None,name:str=None):
     fig, ax = plt.subplots()
     ax.imshow(masked)
     plt.show()
+    tiff = None
     return fig, ax
 
 def make_tfw(file:str,outprefix:str=None):
@@ -51,6 +52,8 @@ def make_tfw(file:str,outprefix:str=None):
     f = open(outprefix[:-4]+'.tfw','w')
     f.write(outstr)
     f.close()
+    # close tif
+    im = None
     return outstr
 
 def getOutputBounds(image_ds):
@@ -59,7 +62,7 @@ def getOutputBounds(image_ds):
     return [gt[0], gt[3], gt[0] + (gt[1] * image_ds.RasterXSize), gt[3] + (gt[5] * image_ds.RasterYSize)]
 
 def getOverlap(im1, im2):
-    '''Takes two geotiff images (in same reference system!) and computes minx, miny, maxx, maxy.'''
+    '''Takes two open geotiff images (in same reference system!) and computes minx, miny, maxx, maxy.'''
     r1 = getOutputBounds(im1)
     r2 = getOutputBounds(im2)
     print('(ulx, uly, lrx, lry)')
@@ -113,18 +116,21 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     new_ds.SetGeoTransform(im.GetGeoTransform())
     new_band = new_ds.GetRasterBand(1)
     new_band.WriteArray(grayscale_band)
-
+    
     # Set optional parameters
     if a_ullr is not None:
         bounds = [a_ullr[0], a_ullr[3], a_ullr[2], a_ullr[1]]
     else:
         bounds = None
-
     # Warp the dataset
     imout = gdal.Warp(outname, new_ds, xRes=outres[0], yRes=outres[1],
                       outputBounds=bounds,cutlineDSName=cutlineDSName, dstSRS=srs, resampleAlg=interp,
                       outputType=gdal.GDT_Float32)
+    # Close files
     imout = None
+    new_ds = None
+    im = None
+    return
     
 
 def save_geotiff(data, output_path, geotransform, projection):
