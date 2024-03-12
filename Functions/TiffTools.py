@@ -156,16 +156,15 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
                       outputBounds=bounds,cutlineDSName=cutlineDSName, dstSRS=srs, resampleAlg=interp,
                       outputType=dtype,dstNodata=-999)
     # Close files
-
     imout = None
     new_ds = None
     im = None
     return
   
 def micmacPostProcessing(folder:str,
-                           prefile:str,
-                           outprefix:str=None,
-                           dtype:int=gdal.GDT_Float32):
+                         prefile:str,
+                         outprefix:str=None,
+                         dtype:int=gdal.GDT_Float32):
     '''
     Takes a MicMac output folder, and uses gdal to calculate NS and EW displacement tifs, and corresponding correlation files.
     
@@ -180,7 +179,7 @@ def micmacPostProcessing(folder:str,
     gt = refim.GetGeoTransform()
     res = gt[1]
     refimNodata = refim.GetRasterBand(1).GetNoDataValue()
-    nodata_mask = (refim != refimNodata)
+    nodata_mask = (refim.GetRasterBand(1).ReadAsArray() != refimNodata)
 
     if outprefix is None:
         outprefix = folder
