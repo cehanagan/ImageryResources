@@ -105,7 +105,8 @@ def save_geotiff(data, output_path, geotransform, projection,dtype=gdal.GDT_Floa
 
 def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None,dtype=gdal.GDT_Float32):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
-       Optional SRS code and bounds [ulx, uly, lrx, lry].'''
+       Optional SRS code and bounds [ulx, uly, lrx, lry]. Cutline can be used to crop irregular shapes.
+       Output no data value is -999.'''
     im = gdal.Open(tiffile)
     if im is None:
         print("Error: Unable to open the input file.")
@@ -155,6 +156,7 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
                       outputBounds=bounds,cutlineDSName=cutlineDSName, dstSRS=srs, resampleAlg=interp,
                       outputType=dtype,dstNodata=-999)
     # Close files
+
     imout = None
     new_ds = None
     im = None
