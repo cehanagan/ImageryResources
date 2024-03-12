@@ -80,28 +80,26 @@ def getOverlap(im1, im2):
     print(minx, miny, maxx, maxy)
     return [minx, miny, maxx, maxy]  
 
-def save_geotiff(data, output_path, geotransform, projection,dtype=gdal.GDT_Float32,nodata=-999):
+def save_geotiff(data, output_path, geotransform, projection,nodata=-999):
     # Get the shape of the input data
     rows, cols = data.shape
 
     # Create a driver
     driver = gdal.GetDriverByName('GTiff')
 
-    # Create the output GeoTIFF file
-    out_data = driver.Create(output_path, cols, rows, 1, dtype)
-
-    # Write the data to the band
-    out_band = out_data.GetRasterBand(1)
-    out_band.WriteArray(data)
-    out_band.SetNoDataValue(nodata)
-
+    # Create the output GeoTIFF file (path, cols, rows, bands, dtype)
+    out_data = driver.Create(output_path, cols, rows, 1, gdal.GDT_Float64)
     # Set the geotransform and projection
     out_data.SetGeoTransform(geotransform)
     out_data.SetProjection(projection)
+    out_data.GetRasterBand(1).SetNoDataValue(nodata)
+
+    # Write the data to the band
+    out_data.GetRasterBand(1).WriteArray(data)
 
     # Close the file
     out_data = None
-    return
+    return 
 
 def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None,dtype=gdal.GDT_Float32):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
@@ -163,8 +161,7 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
   
 def micmacPostProcessing(folder:str,
                          prefile:str,
-                         outprefix:str=None,
-                         dtype:int=gdal.GDT_Float32):
+                         outprefix:str=None):
     '''
     Takes a MicMac output folder, and uses gdal to calculate NS and EW displacement tifs, and corresponding correlation files.
     
@@ -190,8 +187,9 @@ def micmacPostProcessing(folder:str,
     # Mask NoData values, considering only non-Nodata pixels
     px2[~nodata_mask] = refimNodata
     # Save in a new, georeferenced file
+    print('Saving',outprefix+'NSmicmac.tif')
     save_geotiff(px2, outprefix+'NSmicmac.tif', geotransform=gt, projection=refim.GetProjection(),
-                 nodata=refimNodata,dtype=dtype)
+                 nodata=refimNodata)
     px2ds = None
 
     # EW
@@ -199,8 +197,9 @@ def micmacPostProcessing(folder:str,
     px1 = px1ds.GetRasterBand(1).ReadAsArray() * 0.05 * res
     # considering only non-Nodata pixels
     px1[~nodata_mask] = refimNodata
+    print('Saving',outprefix+'EWmicmac.tif')
     save_geotiff(px1, outprefix+'EWmicmac.tif', geotransform=gt, projection=refim.GetProjection(),
-                 nodata=refimNodata,dtype=dtype)
+                 nodata=refimNodata)
     px1ds = None
 
     # Correlation file
@@ -208,9 +207,10 @@ def micmacPostProcessing(folder:str,
     correl = (correlds.GetRasterBand(1).ReadAsArray()-127.5)/127.5
     # Mask NoData values, considering only non-Nodata pixels
     correl[~nodata_mask] = refimNodata
+    print('Saving',outprefix+'Correlmicmac.tif')
     save_geotiff(correl, outprefix+'Correlmicmac.tif', geotransform=gt, projection=refim.GetProjection(),
-                 nodata=refimNodata,dtype=dtype)
+                 nodata=refimNodata)
     correlds = None
     refim = None
-    return
+    return 
 
