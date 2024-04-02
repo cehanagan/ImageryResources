@@ -101,7 +101,7 @@ def save_geotiff(data, output_path, geotransform, projection,nodata=-999):
     out_data = None
     return 
 
-def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None,dtype=gdal.GDT_Float32):
+def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
        Optional SRS code and bounds [ulx, uly, lrx, lry]. Cutline can be used to crop irregular shapes.
        Output no data value is -999.'''
@@ -119,6 +119,8 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     if interp is None:
         interp = 'cubic'
 
+    nodata = -999 if not isinstance(im.GetRasterBand(1).GetNoDataValue(), (int, float, complex)) else im.GetRasterBand(1).GetNoDataValue()
+
     if im.RasterCount >= 3:
         print('Computing Gray from RGB values')
         # Read RGB bands
@@ -126,20 +128,21 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
         G = im.GetRasterBand(2).ReadAsArray()
         B = im.GetRasterBand(3).ReadAsArray()
         # Mask NoData values
-        nodata_mask = (R != im.GetRasterBand(1).GetNoDataValue()) & \
-                      (G != im.GetRasterBand(2).GetNoDataValue()) & \
-                      (B != im.GetRasterBand(3).GetNoDataValue())
+        nodata_mask = (R != nodata) & \
+                      (G != nodata) & \
+                      (B != nodata)
         # Create a grayscale version of the bands, considering only non-Nodata pixels
         grayscale_band = 0.2989 * R + 0.5870 * G + 0.1140 * B
-        grayscale_band[~nodata_mask] = im.GetRasterBand(1).GetNoDataValue()
     else:
         # Read the 1st band
         grayscale_band = im.GetRasterBand(1).ReadAsArray()
+        nodata_mask = (grayscale_band != nodata)
+    grayscale_band[~nodata_mask] = nodata
     print('Writing to', outname)
     # Create new dataset and band for writing
     driver = gdal.GetDriverByName('GTiff')
     new_ds = driver.Create(outname, im.RasterXSize, im.RasterYSize, 1, gdal.GDT_Float32)
-    new_ds.SetProjection(srs)
+    new_ds.SetProjection(im.GetProjection())
     new_ds.SetGeoTransform(im.GetGeoTransform())
     new_band = new_ds.GetRasterBand(1)
     new_band.WriteArray(grayscale_band)
@@ -149,15 +152,20 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
         bounds = [a_ullr[0], a_ullr[3], a_ullr[2], a_ullr[1]]
     else:
         bounds = None
+
+    if cutlineDSName is None:
+        cropToCutline = False
+    else:
+        cropToCutline = True
     # Warp the dataset
     imout = gdal.Warp(outname, new_ds, xRes=outres[0], yRes=outres[1],
-                      outputBounds=bounds,cutlineDSName=cutlineDSName, dstSRS=srs, resampleAlg=interp,
-                      outputType=dtype,dstNodata=-999)
+                      outputBounds=bounds,cutlineDSName=cutlineDSName,cropToCutline=True,dstSRS=srs, resampleAlg=interp,
+                      dstNodata=-999)
     # Close files
     imout = None
     new_ds = None
     im = None
-    return
+    return grayscale_band
   
 def micmacPostProcessing(folder:str,
                          prefile:str,
@@ -214,3 +222,410 @@ def micmacPostProcessing(folder:str,
     refim = None
     return 
 
+def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif='PerpendicularDisp.tif'):
+    ewds = gdal.Open(ewtif)
+    if mask is None:
+        nodata_mask = (ewds.GetRasterBand(1).ReadAsArray() != ewds.GetRasterBand(1).GetNoDataValue())
+    else:
+        nodata_mask = mask
+    ew = ewds.GetRasterBand(1).ReadAsArray()
+    nsds = gdal.Open(nstif)
+    ns = nsds.GetRasterBand(1).ReadAsArray()
+
+    # Rotation from en (xy) to fault parallel and perp, must convert azimuth
+    theta = (azimuth)*np.pi/180
+    par = ns*np.cos(theta)-ew*np.sin(theta)
+    par[~nodata_mask] = nsds.GetRasterBand(1).GetNoDataValue()
+    perp = ns*np.sin(theta)+ew*np.cos(theta)
+    perp[~nodata_mask] = nsds.GetRasterBand(1).GetNoDataValue()
+
+    save_geotiff(par,partif, ewds.GetGeoTransform(), ewds.GetProjection())
+    save_geotiff(perp,perptif, ewds.GetGeoTransform(), ewds.GetProjection())
+
+    ewds = None
+    nsds = None
+    return par, perp
+
+def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,correlmin=0.5,srchw=2):
+    
+    string = f'''<ParamMICMAC>
+      <DicoLoc>
+            <Symb>Im1=XXXX</Symb>
+            <Symb>Im2=XXXX</Symb>
+            <Symb>Masq=XXXX</Symb>
+            <Symb>DirMEC=MEC/</Symb>
+            <Symb>Pyr=Pyram/</Symb>
+            <Symb>Inc=2.0</Symb>
+            <Symb>Pas=0.2</Symb>
+            <Symb>Teta0=0</Symb>
+            <Symb>UseMasq=false</Symb>
+            <Symb>UseTeta=false</Symb>
+            <Symb>RegulBase=0.3</Symb>
+            <Symb>UseDequant=false</Symb>
+            <Symb>SzW=4</Symb>
+            <Symb>CorrelMin=0.5</Symb>
+            <Symb>GammaCorrel=2</Symb>
+            <Symb>PdsF=0.1</Symb>
+            <Symb>NbDir=7</Symb>
+            <Symb>VPds=[1,0.411765,0.259259,0.189189,0.148936,0.122807,0.104478,0.090909,0.104478,0.090909,0.148936,0.189189,0.259259,0.411765]</Symb>
+            <Symb>SsResolOpt=4</Symb>
+            <Symb>Px1Moy=0</Symb>
+            <Symb>Px2Moy=0</Symb>
+            <Symb>Interpolateur=eInterpolSinCard</Symb>
+            <Symb>SurEchWCor=1</Symb>
+            <Symb>ZoomInit=1</Symb>
+            <eSymb>P0= / 0.1 +   0.1 / 0 7</eSymb>
+            <eSymb>P1= / 0.1 +   0.1 / 1 7</eSymb>
+            <eSymb>P2= / 0.1 +   0.1 / 2 7</eSymb>
+            <eSymb>P3= / 0.1 +   0.1 / 3 7</eSymb>
+            <eSymb>P4= / 0.1 +   0.1 / 4 7</eSymb>
+            <eSymb>P5= / 0.1 +   0.1 / 5 7</eSymb>
+            <eSymb>P6= / 0.1 +   0.1 / 6 7</eSymb>
+            <eSymb>P7= / 0.1 +   0.1 / 7 7</eSymb>
+            <eSymb>NbDirTot=* 2 7</eSymb>
+            <eSymb>Regul=* 0.100000  ? false 3 1</eSymb>
+            <eSymb>SsResolOptInterm1=* 4 1</eSymb>
+            <eSymb>SsResolOptInterm2=* 2 1</eSymb>
+            <eSymb>WithZ4= SupEq 1 4</eSymb>
+            <eSymb>WithZ2= SupEq 1 2</eSymb>
+      </DicoLoc>
+      <Section_Terrain>
+            <IntervalPaxIsProportion>false</IntervalPaxIsProportion>
+            <EstimPxPrefZ2Prof>false</EstimPxPrefZ2Prof>
+            <IntervParalaxe>
+                  <Px1Moy>0</Px1Moy>
+                  <Px2Moy>0</Px2Moy>
+                  <Px1IncCalc>2</Px1IncCalc>
+                  <Px1PropProf>0</Px1PropProf>
+                  <Px2IncCalc>2</Px2IncCalc>
+            </IntervParalaxe>
+            <Planimetrie>
+                  <FilterEstimTerrain>.*</FilterEstimTerrain>
+            </Planimetrie>
+      </Section_Terrain>
+      <Section_PriseDeVue>
+            <BordImage>5</BordImage>
+            <PrefixMasqImRes>MasqIm</PrefixMasqImRes>
+            <DirMasqueImages></DirMasqueImages>
+            <GeomImages>eGeomImage_Epip</GeomImages>
+            <Images>
+                  <Im1>{im1}</Im1>
+                  <Im2>{im2}</Im2>
+            </Images>
+            <NomsGeometrieImage>
+                  <PatternSel>.*</PatternSel>
+                  <PatNameGeom>GridDistId</PatNameGeom>
+                  <AddNumToNameGeom>false</AddNumToNameGeom>
+            </NomsGeometrieImage>
+            <SingulariteInCorresp_I1I2>false</SingulariteInCorresp_I1I2>
+      </Section_PriseDeVue>
+      <Section_MEC>
+            <PasIsInPixel>false</PasIsInPixel>
+            <ClipMecIsProp>false</ClipMecIsProp>
+            <ZoomClipMEC>1</ZoomClipMEC>
+            <NbMinImagesVisibles>2</NbMinImagesVisibles>
+            <OneDefCorAllPxDefCor>false</OneDefCorAllPxDefCor>
+            <ZoomBeginODC_APDC>4</ZoomBeginODC_APDC>
+            <DefCorrelation>-0.0123400000000000003</DefCorrelation>
+            <ReprojPixelNoVal>true</ReprojPixelNoVal>
+            <EpsilonCorrelation>1.00000000000000008e-05</EpsilonCorrelation>
+            <ChantierFullImage1>true</ChantierFullImage1>
+            <ChantierFullMaskImage1>true</ChantierFullMaskImage1>
+            <ExportForMultiplePointsHomologues>false</ExportForMultiplePointsHomologues>
+            <EtapeMEC>
+                  <DeZoom>-1</DeZoom>
+                  <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
+                  <CorrelMin>{correlmin}</CorrelMin>
+                  <GammaCorrel>2</GammaCorrel>
+                  <SzW>{szw}</SzW>
+                  <SurEchWCor>1</SurEchWCor>
+                  <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
+                  <ExportZAbs>false</ExportZAbs>
+                  <ModulationProgDyn>
+                        <EtapeProgDyn>
+                              <NbDir>14</NbDir>
+                              <ModeAgreg>ePrgDAgrSomme</ModeAgreg>
+                              <Teta0>0</Teta0>
+                        </EtapeProgDyn>
+                        <Px1PenteMax>0.400000000000000022</Px1PenteMax>
+                        <Px2PenteMax>0.400000000000000022</Px2PenteMax>
+                  </ModulationProgDyn>
+                  <SsResolOptim>{ssresolopt}</SsResolOptim>
+                  <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
+                  <SzSinCard>5</SzSinCard>
+                  <SzAppodSinCard>5</SzAppodSinCard>
+                  <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
+                  <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
+                  <Px1Regul>{regul}</Px1Regul>
+                  <Px1Pas>0.200000000000000011</Px1Pas>
+                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
+                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px2Regul>{regul}</Px2Regul>
+                  <Px2Pas>0.200000000000000011</Px2Pas>
+                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
+                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <GenImagesCorrel>true</GenImagesCorrel>
+            </EtapeMEC>
+            <EtapeMEC>
+                  <DeZoom>1</DeZoom>
+                  <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
+                  <CorrelMin>{correlmin}</CorrelMin>
+                  <GammaCorrel>2</GammaCorrel>
+                  <AggregCorr>eAggregSymetrique</AggregCorr>
+                  <SzW>{szw}</SzW>
+                  <SurEchWCor>1</SurEchWCor>
+                  <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
+                  <ExportZAbs>false</ExportZAbs>
+                  <ModulationProgDyn>
+                        <EtapeProgDyn>
+                              <NbDir>14</NbDir>
+                              <ModeAgreg>ePrgDAgrSomme</ModeAgreg>
+                              <Teta0>0</Teta0>
+                        </EtapeProgDyn>
+                        <Px1PenteMax>0.400000000000000022</Px1PenteMax>
+                        <Px2PenteMax>0.400000000000000022</Px2PenteMax>
+                  </ModulationProgDyn>
+                  <SsResolOptim>4</SsResolOptim>
+                  <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
+                  <SzSinCard>5</SzSinCard>
+                  <SzAppodSinCard>5</SzAppodSinCard>
+                  <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
+                  <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
+                  <Px1Regul>2</Px1Regul>
+                  <Px1Pas>0.800000000000000044</Px1Pas>
+                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
+                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px2Regul>2</Px2Regul>
+                  <Px2Pas>0.800000000000000044</Px2Pas>
+                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
+                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <GenImagesCorrel>true</GenImagesCorrel>
+            </EtapeMEC>
+            <EtapeMEC>
+                  <DeZoom>1</DeZoom>
+                  <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
+                  <CorrelMin>{correlmin}</CorrelMin>
+                  <GammaCorrel>2</GammaCorrel>
+                  <AggregCorr>eAggregSymetrique</AggregCorr>
+                  <SzW>{szw}</SzW>
+                  <SurEchWCor>1</SurEchWCor>
+                  <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
+                  <ExportZAbs>false</ExportZAbs>
+                  <ModulationProgDyn>
+                        <EtapeProgDyn>
+                              <NbDir>14</NbDir>
+                              <ModeAgreg>ePrgDAgrSomme</ModeAgreg>
+                              <Teta0>0</Teta0>
+                        </EtapeProgDyn>
+                        <Px1PenteMax>0.400000000000000022</Px1PenteMax>
+                        <Px2PenteMax>0.400000000000000022</Px2PenteMax>
+                  </ModulationProgDyn>
+                  <SsResolOptim>2</SsResolOptim>
+                  <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
+                  <SzSinCard>5</SzSinCard>
+                  <SzAppodSinCard>5</SzAppodSinCard>
+                  <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
+                  <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
+                  <Px1Regul>2</Px1Regul>
+                  <Px1Pas>0.400000000000000022</Px1Pas>
+                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
+                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px2Regul>2</Px2Regul>
+                  <Px2Pas>0.400000000000000022</Px2Pas>
+                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
+                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <GenImagesCorrel>true</GenImagesCorrel>
+            </EtapeMEC>
+            <EtapeMEC>
+                  <DeZoom>1</DeZoom>
+                  <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
+                  <CorrelMin>{correlmin}</CorrelMin>
+                  <GammaCorrel>2</GammaCorrel>
+                  <AggregCorr>eAggregSymetrique</AggregCorr>
+                  <SzW>{szw}</SzW>
+                  <SurEchWCor>1</SurEchWCor>
+                  <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
+                  <ExportZAbs>false</ExportZAbs>
+                  <ModulationProgDyn>
+                        <EtapeProgDyn>
+                              <NbDir>14</NbDir>
+                              <ModeAgreg>ePrgDAgrSomme</ModeAgreg>
+                              <Teta0>0</Teta0>
+                        </EtapeProgDyn>
+                        <Px1PenteMax>0.400000000000000022</Px1PenteMax>
+                        <Px2PenteMax>0.400000000000000022</Px2PenteMax>
+                  </ModulationProgDyn>
+                  <SsResolOptim>2</SsResolOptim>
+                  <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
+                  <SzSinCard>5</SzSinCard>
+                  <SzAppodSinCard>5</SzAppodSinCard>
+                  <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
+                  <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
+                  <Px1Regul>1</Px1Regul>
+                  <Px1Pas>0.200000000000000011</Px1Pas>
+                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
+                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px2Regul>1</Px2Regul>
+                  <Px2Pas>0.200000000000000011</Px2Pas>
+                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
+                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <GenImagesCorrel>true</GenImagesCorrel>
+            </EtapeMEC>
+            <EtapeMEC>
+                  <DeZoom>1</DeZoom>
+                  <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
+                  <CorrelMin>{correlmin}</CorrelMin>
+                  <GammaCorrel>2</GammaCorrel>
+                  <AggregCorr>eAggregSymetrique</AggregCorr>
+                  <SzW>{szw}</SzW>
+                  <SurEchWCor>1</SurEchWCor>
+                  <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
+                  <ExportZAbs>false</ExportZAbs>
+                  <ModulationProgDyn>
+                        <EtapeProgDyn>
+                              <NbDir>14</NbDir>
+                              <ModeAgreg>ePrgDAgrSomme</ModeAgreg>
+                              <Teta0>0</Teta0>
+                        </EtapeProgDyn>
+                        <Px1PenteMax>0.400000000000000022</Px1PenteMax>
+                        <Px2PenteMax>0.400000000000000022</Px2PenteMax>
+                  </ModulationProgDyn>
+                  <SsResolOptim>{ssresolopt}</SsResolOptim>
+                  <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
+                  <SzSinCard>5</SzSinCard>
+                  <SzAppodSinCard>5</SzAppodSinCard>
+                  <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
+                  <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
+                  <Px1Regul>1</Px1Regul>
+                  <Px1Pas>0.100000000000000006</Px1Pas>
+                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
+                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px2Regul>1</Px2Regul>
+                  <Px2Pas>0.100000000000000006</Px2Pas>
+                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
+                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <GenImagesCorrel>true</GenImagesCorrel>
+            </EtapeMEC>
+            <EtapeMEC>
+                  <DeZoom>1</DeZoom>
+                  <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
+                  <CorrelMin>{correlmin}</CorrelMin>
+                  <GammaCorrel>2</GammaCorrel>
+                  <AggregCorr>eAggregSymetrique</AggregCorr>
+                  <SzW>{szw}</SzW>
+                  <SurEchWCor>1</SurEchWCor>
+                  <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
+                  <ExportZAbs>false</ExportZAbs>
+                  <ModulationProgDyn>
+                        <EtapeProgDyn>
+                              <NbDir>14</NbDir>
+                              <ModeAgreg>ePrgDAgrSomme</ModeAgreg>
+                              <Teta0>0</Teta0>
+                        </EtapeProgDyn>
+                        <Px1PenteMax>0.400000000000000022</Px1PenteMax>
+                        <Px2PenteMax>0.400000000000000022</Px2PenteMax>
+                  </ModulationProgDyn>
+                  <SsResolOptim>{ssresolopt}</SsResolOptim>
+                  <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
+                  <SzSinCard>5</SzSinCard>
+                  <SzAppodSinCard>5</SzAppodSinCard>
+                  <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
+                  <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
+                  <Px1Regul>{regul}</Px1Regul>
+                  <Px1Pas>0.0500000000000000028</Px1Pas>
+                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
+                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px2Regul>{regul}</Px2Regul>
+                  <Px2Pas>0.0500000000000000028</Px2Pas>
+                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
+                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <GenImagesCorrel>true</GenImagesCorrel>
+            </EtapeMEC>
+            <HighPrecPyrIm>true</HighPrecPyrIm>
+      </Section_MEC>
+      <Section_Results>
+            <Use_MM_EtatAvancement>false</Use_MM_EtatAvancement>
+            <X_DirPlanInterFaisceau>0</X_DirPlanInterFaisceau>
+            <Y_DirPlanInterFaisceau>0</Y_DirPlanInterFaisceau>
+            <Z_DirPlanInterFaisceau>0</Z_DirPlanInterFaisceau>
+            <GeomMNT>eGeomPxBiDim</GeomMNT>
+            <Prio2OwnAltisolForEmprise>false</Prio2OwnAltisolForEmprise>
+            <TagRepereCorrel>RepereCartesien</TagRepereCorrel>
+            <DoMEC>true</DoMEC>
+            <DoFDC>false</DoFDC>
+            <GenereXMLComp>true</GenereXMLComp>
+            <SaturationTA>50</SaturationTA>
+            <OrthoTA>false</OrthoTA>
+            <LazyZoomMaskTerrain>false</LazyZoomMaskTerrain>
+            <MakeImCptTA>false</MakeImCptTA>
+            <GammaVisu>1</GammaVisu>
+            <ZoomVisuLiaison>-1</ZoomVisuLiaison>
+            <TolerancePointHomInImage>0</TolerancePointHomInImage>
+            <FiltragePointHomInImage>0</FiltragePointHomInImage>
+            <BaseCodeRetourMicmacErreur>100</BaseCodeRetourMicmacErreur>
+      </Section_Results>
+      <Section_WorkSpace>
+            <UseProfInVertLoc>true</UseProfInVertLoc>
+            <WorkDir>./</WorkDir>
+            <TmpMEC>MEC/</TmpMEC>
+            <TmpPyr>Pyram/</TmpPyr>
+            <TmpGeom></TmpGeom>
+            <TmpResult>MEC/</TmpResult>
+            <CalledByProcess>false</CalledByProcess>
+            <IdMasterProcess>-1</IdMasterProcess>
+            <CreateGrayFileAtBegin>false</CreateGrayFileAtBegin>
+            <Visu>false</Visu>
+            <ByProcess>128</ByProcess>
+            <StopOnEchecFils>true</StopOnEchecFils>
+            <AvalaibleMemory>128</AvalaibleMemory>
+            <SzRecouvrtDalles>50</SzRecouvrtDalles>
+            <SzDalleMin>500</SzDalleMin>
+            <SzDalleMax>800</SzDalleMax>
+            <NbCelluleMax>80000000</NbCelluleMax>
+            <SzMinDecomposCalc>10</SzMinDecomposCalc>
+            <DefTileFile>100000</DefTileFile>
+            <NbPixDefFilesAux>30000000</NbPixDefFilesAux>
+            <DeZoomDefMinFileAux>4</DeZoomDefMinFileAux>
+            <FirstEtapeMEC>0</FirstEtapeMEC>
+            <LastEtapeMEC>10000</LastEtapeMEC>
+            <FirstBoiteMEC>0</FirstBoiteMEC>
+            <NbBoitesMEC>100000000</NbBoitesMEC>
+            <NomChantier>LeChantier</NomChantier>
+            <PatternSelPyr>(.*)@(.*)</PatternSelPyr>
+            <PatternNomPyr>$1DeZoom$2.tif</PatternNomPyr>
+            <SeparateurPyr>@</SeparateurPyr>
+            <KeyCalNamePyr>Key-Assoc-Pyram-MM</KeyCalNamePyr>
+            <ActivePurge>false</ActivePurge>
+            <PurgeMECResultBefore>false</PurgeMECResultBefore>
+            <UseChantierNameDescripteur>false</UseChantierNameDescripteur>
+            <ComprMasque>eComprTiff_FAX4</ComprMasque>
+            <TypeMasque>eTN_Bits1MSBF</TypeMasque>
+      </Section_WorkSpace>
+      <Section_Vrac>
+            <DebugMM>false</DebugMM>
+            <SL_XSzW>1000</SL_XSzW>
+            <SL_YSzW>900</SL_YSzW>
+            <SL_Epip>false</SL_Epip>
+            <SL_YDecEpip>0</SL_YDecEpip>
+            <SL_PackHom0></SL_PackHom0>
+            <SL_RedrOnCur>false</SL_RedrOnCur>
+            <SL_NewRedrCur>false</SL_NewRedrCur>
+            <SL_L2Estim>true</SL_L2Estim>
+            <SL_TJS_FILTER>false</SL_TJS_FILTER>
+            <SL_Step_Grid>10</SL_Step_Grid>
+            <SL_Name_Grid_Exp>GridMap_%I_To_%J</SL_Name_Grid_Exp>
+            <VSG_DynImRed>5</VSG_DynImRed>
+            <VSG_DeZoomContr>16</VSG_DeZoomContr>
+            <DumpNappesEnglob>false</DumpNappesEnglob>
+            <InterditAccelerationCorrSpec>false</InterditAccelerationCorrSpec>
+            <InterditCorrelRapide>false</InterditCorrelRapide>
+            <ForceCorrelationByRect>false</ForceCorrelationByRect>
+            <WithMessage>false</WithMessage>
+            <ShowLoadedImage>false</ShowLoadedImage>
+      </Section_Vrac>
+</ParamMICMAC>'''
+
+    f = open(folder+'param_LeChantier_Compl.xml','w')
+    f.write(string)
+    f.close()
+    return f'{folder} param_LeChantier_Compl.xml written.'
