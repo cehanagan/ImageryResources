@@ -101,6 +101,30 @@ def save_geotiff(data, output_path, geotransform, projection,nodata=-999):
     out_data = None
     return 
 
+def curl_2d(vector_fieldx,vector_fieldy):
+    """
+    Compute the curl of a 2D vector field.
+
+    Parameters:
+        vector_field (numpy.ndarray): 2D numpy array representing the vector field.
+                                       Each row represents a point in the field, and each column represents a component (x, y).
+
+    Returns:
+        numpy.ndarray: 1D numpy array representing the curl of the vector field at each point.
+    """
+    # Extract components
+    u = vector_fieldx  # x component
+    v = vector_fieldy  # y component
+
+    # Calculate derivatives
+    du_dy, du_dx = np.gradient(u)
+    dv_dy, dv_dx = np.gradient(v)
+
+    # Compute curl
+    curl = (dv_dx - du_dy)
+
+    return curl
+
 def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
        Optional SRS code and bounds [ulx, uly, lrx, lry]. Cutline can be used to crop irregular shapes.
@@ -119,7 +143,7 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     if interp is None:
         interp = 'cubic'
 
-    nodata = -999 if not isinstance(im.GetRasterBand(1).GetNoDataValue(), (int, float, complex)) else im.GetRasterBand(1).GetNoDataValue()
+    nodata = -9999 if not isinstance(im.GetRasterBand(1).GetNoDataValue(), (int, float, complex)) else im.GetRasterBand(1).GetNoDataValue()
 
     if im.RasterCount >= 3:
         print('Computing Gray from RGB values')
@@ -160,12 +184,12 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     # Warp the dataset
     imout = gdal.Warp(outname, new_ds, xRes=outres[0], yRes=outres[1],
                       outputBounds=bounds,cutlineDSName=cutlineDSName,cropToCutline=True,dstSRS=srs, resampleAlg=interp,
-                      dstNodata=-999)
+                      dstNodata=-9999)
     # Close files
     imout = None
     new_ds = None
     im = None
-    return grayscale_band
+    return 
   
 def micmacPostProcessing(folder:str,
                          prefile:str,
@@ -246,7 +270,7 @@ def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif=
     nsds = None
     return par, perp
 
-def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,correlmin=0.5,srchw=2):
+def createMicmacParamFile(im1,im2,folder='./',SzW=4,CorMin=0.5,SrchW=2):
     
     string = f'''<ParamMICMAC>
       <DicoLoc>
@@ -283,9 +307,9 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
             <eSymb>P6= / 0.1 +   0.1 / 6 7</eSymb>
             <eSymb>P7= / 0.1 +   0.1 / 7 7</eSymb>
             <eSymb>NbDirTot=* 2 7</eSymb>
-            <eSymb>Regul=* 0.100000  ? false 3 1</eSymb>
-            <eSymb>SsResolOptInterm1=* 4 1</eSymb>
-            <eSymb>SsResolOptInterm2=* 2 1</eSymb>
+            <eSymb>Regul=* 0.300000  ? false 3 1</eSymb>
+            <eSymb>SsResolOptInterm1=* 4 4</eSymb>
+            <eSymb>SsResolOptInterm2=* 2 4</eSymb>
             <eSymb>WithZ4= SupEq 1 4</eSymb>
             <eSymb>WithZ2= SupEq 1 2</eSymb>
       </DicoLoc>
@@ -335,44 +359,9 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
             <EtapeMEC>
                   <DeZoom>-1</DeZoom>
                   <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
-                  <CorrelMin>{correlmin}</CorrelMin>
+                  <CorrelMin>{CorMin}</CorrelMin>
                   <GammaCorrel>2</GammaCorrel>
-                  <SzW>{szw}</SzW>
-                  <SurEchWCor>1</SurEchWCor>
-                  <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
-                  <ExportZAbs>false</ExportZAbs>
-                  <ModulationProgDyn>
-                        <EtapeProgDyn>
-                              <NbDir>14</NbDir>
-                              <ModeAgreg>ePrgDAgrSomme</ModeAgreg>
-                              <Teta0>0</Teta0>
-                        </EtapeProgDyn>
-                        <Px1PenteMax>0.400000000000000022</Px1PenteMax>
-                        <Px2PenteMax>0.400000000000000022</Px2PenteMax>
-                  </ModulationProgDyn>
-                  <SsResolOptim>{ssresolopt}</SsResolOptim>
-                  <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
-                  <SzSinCard>5</SzSinCard>
-                  <SzAppodSinCard>5</SzAppodSinCard>
-                  <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
-                  <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
-                  <Px1Regul>{regul}</Px1Regul>
-                  <Px1Pas>0.200000000000000011</Px1Pas>
-                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
-                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
-                  <Px2Regul>{regul}</Px2Regul>
-                  <Px2Pas>0.200000000000000011</Px2Pas>
-                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
-                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
-                  <GenImagesCorrel>true</GenImagesCorrel>
-            </EtapeMEC>
-            <EtapeMEC>
-                  <DeZoom>1</DeZoom>
-                  <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
-                  <CorrelMin>{correlmin}</CorrelMin>
-                  <GammaCorrel>2</GammaCorrel>
-                  <AggregCorr>eAggregSymetrique</AggregCorr>
-                  <SzW>{szw}</SzW>
+                  <SzW>{SzW}</SzW>
                   <SurEchWCor>1</SurEchWCor>
                   <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
                   <ExportZAbs>false</ExportZAbs>
@@ -391,23 +380,23 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
                   <SzAppodSinCard>5</SzAppodSinCard>
                   <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
                   <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
-                  <Px1Regul>2</Px1Regul>
-                  <Px1Pas>0.800000000000000044</Px1Pas>
-                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
-                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
-                  <Px2Regul>2</Px2Regul>
-                  <Px2Pas>0.800000000000000044</Px2Pas>
-                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
-                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <Px1Regul>0.299999999999999989</Px1Regul>
+                  <Px1Pas>0.200000000000000011</Px1Pas>
+                  <Px1DilatAlti>{SrchW}</Px1DilatAlti>
+                  <Px1DilatPlani>{SrchW}</Px1DilatPlani>
+                  <Px2Regul>0.299999999999999989</Px2Regul>
+                  <Px2Pas>0.200000000000000011</Px2Pas>
+                  <Px2DilatAlti>{SrchW}</Px2DilatAlti>
+                  <Px2DilatPlani>{SrchW}</Px2DilatPlani>
                   <GenImagesCorrel>true</GenImagesCorrel>
             </EtapeMEC>
             <EtapeMEC>
                   <DeZoom>1</DeZoom>
                   <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
-                  <CorrelMin>{correlmin}</CorrelMin>
+                  <CorrelMin>{CorMin}</CorrelMin>
                   <GammaCorrel>2</GammaCorrel>
                   <AggregCorr>eAggregSymetrique</AggregCorr>
-                  <SzW>{szw}</SzW>
+                  <SzW>{SzW}</SzW>
                   <SurEchWCor>1</SurEchWCor>
                   <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
                   <ExportZAbs>false</ExportZAbs>
@@ -420,7 +409,42 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
                         <Px1PenteMax>0.400000000000000022</Px1PenteMax>
                         <Px2PenteMax>0.400000000000000022</Px2PenteMax>
                   </ModulationProgDyn>
-                  <SsResolOptim>2</SsResolOptim>
+                  <SsResolOptim>16</SsResolOptim>
+                  <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
+                  <SzSinCard>5</SzSinCard>
+                  <SzAppodSinCard>5</SzAppodSinCard>
+                  <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
+                  <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
+                  <Px1Regul>2</Px1Regul>
+                  <Px1Pas>0.800000000000000044</Px1Pas>
+                  <Px1DilatAlti>{SrchW}</Px1DilatAlti>
+                  <Px1DilatPlani>{SrchW}</Px1DilatPlani>
+                  <Px2Regul>2</Px2Regul>
+                  <Px2Pas>0.800000000000000044</Px2Pas>
+                  <Px2DilatAlti>{SrchW}</Px2DilatAlti>
+                  <Px2DilatPlani>{SrchW}</Px2DilatPlani>
+                  <GenImagesCorrel>true</GenImagesCorrel>
+            </EtapeMEC>
+            <EtapeMEC>
+                  <DeZoom>1</DeZoom>
+                  <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
+                  <CorrelMin>{CorMin}</CorrelMin>
+                  <GammaCorrel>2</GammaCorrel>
+                  <AggregCorr>eAggregSymetrique</AggregCorr>
+                  <SzW>{SzW}</SzW>
+                  <SurEchWCor>1</SurEchWCor>
+                  <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
+                  <ExportZAbs>false</ExportZAbs>
+                  <ModulationProgDyn>
+                        <EtapeProgDyn>
+                              <NbDir>14</NbDir>
+                              <ModeAgreg>ePrgDAgrSomme</ModeAgreg>
+                              <Teta0>0</Teta0>
+                        </EtapeProgDyn>
+                        <Px1PenteMax>0.400000000000000022</Px1PenteMax>
+                        <Px2PenteMax>0.400000000000000022</Px2PenteMax>
+                  </ModulationProgDyn>
+                  <SsResolOptim>8</SsResolOptim>
                   <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
                   <SzSinCard>5</SzSinCard>
                   <SzAppodSinCard>5</SzAppodSinCard>
@@ -428,21 +452,21 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
                   <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
                   <Px1Regul>2</Px1Regul>
                   <Px1Pas>0.400000000000000022</Px1Pas>
-                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
-                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px1DilatAlti>{SrchW}</Px1DilatAlti>
+                  <Px1DilatPlani>{SrchW}</Px1DilatPlani>
                   <Px2Regul>2</Px2Regul>
                   <Px2Pas>0.400000000000000022</Px2Pas>
-                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
-                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <Px2DilatAlti>{SrchW}</Px2DilatAlti>
+                  <Px2DilatPlani>{SrchW}</Px2DilatPlani>
                   <GenImagesCorrel>true</GenImagesCorrel>
             </EtapeMEC>
             <EtapeMEC>
                   <DeZoom>1</DeZoom>
                   <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
-                  <CorrelMin>{correlmin}</CorrelMin>
+                  <CorrelMin>{CorMin}</CorrelMin>
                   <GammaCorrel>2</GammaCorrel>
                   <AggregCorr>eAggregSymetrique</AggregCorr>
-                  <SzW>{szw}</SzW>
+                  <SzW>{SzW}</SzW>
                   <SurEchWCor>1</SurEchWCor>
                   <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
                   <ExportZAbs>false</ExportZAbs>
@@ -455,7 +479,7 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
                         <Px1PenteMax>0.400000000000000022</Px1PenteMax>
                         <Px2PenteMax>0.400000000000000022</Px2PenteMax>
                   </ModulationProgDyn>
-                  <SsResolOptim>2</SsResolOptim>
+                  <SsResolOptim>8</SsResolOptim>
                   <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
                   <SzSinCard>5</SzSinCard>
                   <SzAppodSinCard>5</SzAppodSinCard>
@@ -463,21 +487,21 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
                   <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
                   <Px1Regul>1</Px1Regul>
                   <Px1Pas>0.200000000000000011</Px1Pas>
-                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
-                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px1DilatAlti>{SrchW}</Px1DilatAlti>
+                  <Px1DilatPlani>{SrchW}</Px1DilatPlani>
                   <Px2Regul>1</Px2Regul>
                   <Px2Pas>0.200000000000000011</Px2Pas>
-                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
-                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <Px2DilatAlti>{SrchW}</Px2DilatAlti>
+                  <Px2DilatPlani>{SrchW}</Px2DilatPlani>
                   <GenImagesCorrel>true</GenImagesCorrel>
             </EtapeMEC>
             <EtapeMEC>
                   <DeZoom>1</DeZoom>
                   <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
-                  <CorrelMin>{correlmin}</CorrelMin>
+                  <CorrelMin>{CorMin}</CorrelMin>
                   <GammaCorrel>2</GammaCorrel>
                   <AggregCorr>eAggregSymetrique</AggregCorr>
-                  <SzW>{szw}</SzW>
+                  <SzW>{SzW}</SzW>
                   <SurEchWCor>1</SurEchWCor>
                   <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
                   <ExportZAbs>false</ExportZAbs>
@@ -490,7 +514,7 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
                         <Px1PenteMax>0.400000000000000022</Px1PenteMax>
                         <Px2PenteMax>0.400000000000000022</Px2PenteMax>
                   </ModulationProgDyn>
-                  <SsResolOptim>{ssresolopt}</SsResolOptim>
+                  <SsResolOptim>4</SsResolOptim>
                   <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
                   <SzSinCard>5</SzSinCard>
                   <SzAppodSinCard>5</SzAppodSinCard>
@@ -498,21 +522,21 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
                   <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
                   <Px1Regul>1</Px1Regul>
                   <Px1Pas>0.100000000000000006</Px1Pas>
-                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
-                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
+                  <Px1DilatAlti>{SrchW}</Px1DilatAlti>
+                  <Px1DilatPlani>{SrchW}</Px1DilatPlani>
                   <Px2Regul>1</Px2Regul>
                   <Px2Pas>0.100000000000000006</Px2Pas>
-                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
-                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <Px2DilatAlti>{SrchW}</Px2DilatAlti>
+                  <Px2DilatPlani>{SrchW}</Px2DilatPlani>
                   <GenImagesCorrel>true</GenImagesCorrel>
             </EtapeMEC>
             <EtapeMEC>
                   <DeZoom>1</DeZoom>
                   <DynamiqueCorrel>eCoeffGamma</DynamiqueCorrel>
-                  <CorrelMin>{correlmin}</CorrelMin>
+                  <CorrelMin>{CorMin}</CorrelMin>
                   <GammaCorrel>2</GammaCorrel>
                   <AggregCorr>eAggregSymetrique</AggregCorr>
-                  <SzW>{szw}</SzW>
+                  <SzW>{SzW}</SzW>
                   <SurEchWCor>1</SurEchWCor>
                   <AlgoRegul>eAlgo2PrgDyn</AlgoRegul>
                   <ExportZAbs>false</ExportZAbs>
@@ -525,20 +549,20 @@ def createMicmacParamFile(im1,im2,folder='./',szw=4,regul=0.3,ssresolopt=4,corre
                         <Px1PenteMax>0.400000000000000022</Px1PenteMax>
                         <Px2PenteMax>0.400000000000000022</Px2PenteMax>
                   </ModulationProgDyn>
-                  <SsResolOptim>{ssresolopt}</SsResolOptim>
+                  <SsResolOptim>4</SsResolOptim>
                   <ModeInterpolation>eInterpolSinCard</ModeInterpolation>
                   <SzSinCard>5</SzSinCard>
                   <SzAppodSinCard>5</SzAppodSinCard>
                   <TailleFenetreSinusCardinal>3</TailleFenetreSinusCardinal>
                   <ApodisationSinusCardinal>false</ApodisationSinusCardinal>
-                  <Px1Regul>{regul}</Px1Regul>
+                  <Px1Regul>0.299999999999999989</Px1Regul>
                   <Px1Pas>0.0500000000000000028</Px1Pas>
-                  <Px1DilatAlti>{srchw}</Px1DilatAlti>
-                  <Px1DilatPlani>{srchw}</Px1DilatPlani>
-                  <Px2Regul>{regul}</Px2Regul>
+                  <Px1DilatAlti>{SrchW}</Px1DilatAlti>
+                  <Px1DilatPlani>{SrchW}</Px1DilatPlani>
+                  <Px2Regul>0.299999999999999989</Px2Regul>
                   <Px2Pas>0.0500000000000000028</Px2Pas>
-                  <Px2DilatAlti>{srchw}</Px2DilatAlti>
-                  <Px2DilatPlani>{srchw}</Px2DilatPlani>
+                  <Px2DilatAlti>{SrchW}</Px2DilatAlti>
+                  <Px2DilatPlani>{SrchW}</Px2DilatPlani>
                   <GenImagesCorrel>true</GenImagesCorrel>
             </EtapeMEC>
             <HighPrecPyrIm>true</HighPrecPyrIm>
