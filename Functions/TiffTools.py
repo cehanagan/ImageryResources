@@ -1,4 +1,5 @@
 from osgeo import gdal, ogr
+from osgeo_utils import gdal_calc
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -208,6 +209,9 @@ def micmacPostProcessing(folder:str,
     gt = refim.GetGeoTransform()
     res = gt[1]
     refimNodata = refim.GetRasterBand(1).GetNoDataValue()
+    if refimNodata == None:
+        print('Setting nodata value to 0, because reference had no specified value.')
+        refimNodata = 0
     nodata_mask = (refim.GetRasterBand(1).ReadAsArray() != refimNodata)
 
     if outprefix is None:
@@ -246,6 +250,120 @@ def micmacPostProcessing(folder:str,
     refim = None
     return 
 
+def micmacStack(infolderlist,outfolder,az=None):
+    '''
+    Creates NS, EW, Parrallel, and Perpendicular stacked maps, weighted by correlation score. 
+    Each folder in infolderlist should contain the EWmicmac.tif, NSmicmac.tif, and Correlmicmac.tif created from micmacPostProcessing.
+    Will fail if images are too large. 
+    '''
+    disp = {'NS':[],'EW':[],'Co':[]}
+    # Add all of the tifs together
+    for infile in ['NSmicmac.tif','EWmicmac.tif','Correlmicmac.tif']:
+        print(f'Working on {infile}')
+        baseim = gdal.Open(infolderlist[0]+infile)
+        Comb = baseim.GetRasterBand(1).ReadAsArray()
+        if infile == 'NSmicmac.tif':
+            nodatamask = (baseim.GetRasterBand(1).ReadAsArray() != baseim.GetRasterBand(1).GetNoDataValue())
+        print('Adding values from',infolderlist[0])
+        disp[infile[:2]] = np.zeros((np.shape(Comb)[0],np.shape(Comb)[1],len(infolderlist)))
+        disp[infile[:2]][:,:,0] = Comb
+        for i,folder in enumerate(infolderlist[1:]):
+            im = gdal.Open(folder+infile)
+            disp[infile[:2]][:,:,i+1] = im.GetRasterBand(1).ReadAsArray()
+            print('Adding values from',folder)
+
+    
+    corrtot = np.sum(disp['Co'],axis=2)
+    corrtot[~nodatamask] = baseim.GetRasterBand(1).GetNoDataValue()
+
+    NSdisp = (((disp['NS'][:,:,0]))*disp['Co'][:,:,0]/corrtot + (disp['NS'][:,:,1])*disp['Co'][:,:,1]/corrtot + \
+          (disp['NS'][:,:,2])*disp['Co'][:,:,2]/corrtot + (disp['NS'][:,:,3])*disp['Co'][:,:,3]/corrtot)
+    NSdisp[~nodatamask] = baseim.GetRasterBand(1).GetNoDataValue()
+    save_geotiff(NSdisp,outfolder+'NSDispStacked.tif',baseim.GetGeoTransform(),baseim.GetProjection())
+
+    EWdisp = (((disp['EW'][:,:,0]))*disp['Co'][:,:,0]/corrtot + (disp['EW'][:,:,1])*disp['Co'][:,:,1]/corrtot + \
+          (disp['EW'][:,:,2])*disp['Co'][:,:,2]/corrtot + (disp['EW'][:,:,3])*disp['Co'][:,:,3]/corrtot)
+    EWdisp[~nodatamask] = baseim.GetRasterBand(1).GetNoDataValue()
+    save_geotiff(EWdisp,outfolder+'EWDispStacked.tif',baseim.GetGeoTransform(),baseim.GetProjection())
+
+    save_geotiff(corrtot,outfolder+'CorrelStacked.tif',baseim.GetGeoTransform(),baseim.GetProjection())
+
+    if az is not None:
+        par, perp = projectDisp(outfolder+'EWdispStacked.tif',outfolder+'NSdispStacked.tif',az,mask=None,partif=outfolder+'ParallelDispStacked.tif',perptif=outfolder+'PerpendicularDispStacked.tif')
+
+    return 'Done!'
+
+def micmacSimpleStack(infolderlist,outfolder):
+    '''
+    Creates NS, EW, UD stacked maps, weighted by correlation score. 
+    Each folder in infolderlist should contain the EWmicmac.tif, NSmicmac.tif, and Correlmicmac.tif created from micmacPostProcessing.
+    Infolderlist should contain 4 folders, for pairwise pre and post stacking.
+    '''
+    baseim = gdal.Open(infolderlist[0]+'NSmicmac.tif')
+
+    NSdisp = gdal_calc.Calc(calc='A*E/(E+F+G+H)+B*F/(E+F+G+H)+C*G/(E+F+G+H)+D*H/(E+F+G+H)',
+               A=infolderlist[0]+'NSmicmac.tif',B=infolderlist[1]+'NSmicmac.tif',C=infolderlist[2]+'NSmicmac.tif',D=infolderlist[3]+'NSmicmac.tif',
+               E=infolderlist[0]+'Correlmicmac.tif',F=infolderlist[1]+'Correlmicmac.tif',G=infolderlist[2]+'Correlmicmac.tif',H=infolderlist[3]+'Correlmicmac.tif',
+               outfile = outfolder+'NSdispStacked.tif')
+    #save_geotiff(NSdisp,outfolder+'NSDispStacked.tif',baseim.GetGeoTransform(),baseim.GetProjection())
+    NSdisp = 0
+
+    EWdisp = gdal_calc.Calc(calc='A*E/(E+F+G+H)+B*F/(E+F+G+H)+C*G/(E+F+G+H)+D*H/(E+F+G+H)',
+               A=infolderlist[0]+'EWmicmac.tif',B=infolderlist[1]+'EWmicmac.tif',C=infolderlist[2]+'EWmicmac.tif',D=infolderlist[3]+'EWmicmac.tif',
+               E=infolderlist[0]+'Correlmicmac.tif',F=infolderlist[1]+'Correlmicmac.tif',G=infolderlist[2]+'Correlmicmac.tif',H=infolderlist[3]+'Correlmicmac.tif',
+               outfile = outfolder+'EWdispStacked.tif')
+    #save_geotiff(EWdisp,outfolder+'EWDispStacked.tif',baseim.GetGeoTransform(),baseim.GetProjection())
+    EWdisp = 0
+
+    UDdisp = gdal_calc.Calc(calc='A*E/(E+F+G+H)+B*F/(E+F+G+H)+C*G/(E+F+G+H)+D*H/(E+F+G+H)',
+               A=infolderlist[0]+'UDmicmac.tif',B=infolderlist[1]+'UDmicmac.tif',C=infolderlist[2]+'UDmicmac.tif',D=infolderlist[3]+'UDmicmac.tif',
+               E=infolderlist[0]+'Correlmicmac.tif',F=infolderlist[1]+'Correlmicmac.tif',G=infolderlist[2]+'Correlmicmac.tif',H=infolderlist[3]+'Correlmicmac.tif',
+               outfile = outfolder+'UDdispStacked.tif')
+    #save_geotiff(UDdisp,outfolder+'UDdispStacked.tif',baseim.GetGeoTransform(),baseim.GetProjection())
+    UDdisp = 0
+
+    Correldisp = gdal_calc.Calc(calc='A+B+C+D',
+               A=infolderlist[0]+'Correlmicmac.tif',B=infolderlist[1]+'Correlmicmac.tif',C=infolderlist[2]+'Correlmicmac.tif',D=infolderlist[3]+'Correlmicmac.tif',
+               outfile = outfolder+'CorreldispStacked.tif')
+    #save_geotiff(UDdisp,outfolder+'UDdispStacked.tif',baseim.GetGeoTransform(),baseim.GetProjection())
+    Correldisp = 0
+
+    return 'Done!'
+
+
+def micmacStackUD(infolderlist,outfolder):
+    '''
+    Creates UD stacked map, weighted by correlation score. 
+    Each folder in infolderlist should contain the UDmicmac.tif and Correlmicmac.tif created from micmacPostProcessing and veerticalDisp.
+
+    '''
+    disp = {'UD':[],'Co':[]}
+    # Add all of the tifs together
+    for infile in ['UDmicmac.tif','Correlmicmac.tif']:
+        print(f'Working on {infile}')
+        baseim = gdal.Open(infolderlist[0]+infile)
+        Comb = baseim.GetRasterBand(1).ReadAsArray()
+        if infile == 'UDmicmac.tif':
+            nodatamask = (baseim.GetRasterBand(1).ReadAsArray() != baseim.GetRasterBand(1).GetNoDataValue())
+        print('Adding values from',infolderlist[0])
+        disp[infile[:2]] = np.zeros((np.shape(Comb)[0],np.shape(Comb)[1],len(infolderlist)))
+        disp[infile[:2]][:,:,0] = Comb
+        for i,folder in enumerate(infolderlist[1:]):
+            im = gdal.Open(folder+infile)
+            disp[infile[:2]][:,:,i+1] = im.GetRasterBand(1).ReadAsArray()
+            print('Adding values from',folder)
+
+    
+    corrtot = np.sum(disp['Co'],axis=2)
+    corrtot[~nodatamask] = baseim.GetRasterBand(1).GetNoDataValue()
+
+    UDdisp = (((disp['UD'][:,:,0]))*disp['Co'][:,:,0]/corrtot + (disp['UD'][:,:,1])*disp['Co'][:,:,1]/corrtot + \
+          (disp['UD'][:,:,2])*disp['Co'][:,:,2]/corrtot + (disp['UD'][:,:,3])*disp['Co'][:,:,3]/corrtot)
+    UDdisp[~nodatamask] = baseim.GetRasterBand(1).GetNoDataValue()
+    save_geotiff(UDdisp,outfolder+'UDDispStacked.tif',baseim.GetGeoTransform(),baseim.GetProjection())
+
+    return 'Done!'
+
 def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif='PerpendicularDisp.tif'):
     ewds = gdal.Open(ewtif)
 
@@ -259,14 +377,15 @@ def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif=
     else:
         nodata_mask = mask
     ew = ewds.GetRasterBand(1).ReadAsArray()
+
     nsds = gdal.Open(nstif)
     ns = nsds.GetRasterBand(1).ReadAsArray()
 
     # Rotation from en (xy) to fault parallel and perp, must convert azimuth
-    theta = (-azimuth)*np.pi/180
-    par = ns*np.cos(theta)-ew*np.sin(theta)
+    theta = (90-azimuth)*np.pi/180
+    par = ns*np.sin(theta)+ew*np.cos(theta)
     par[~nodata_mask] = nodata
-    perp = ns*np.sin(theta)+ew*np.cos(theta)
+    perp = -1*ns*np.cos(theta)+ew*np.sin(theta)
     perp[~nodata_mask] = nodata
 
     save_geotiff(par,partif, ewds.GetGeoTransform(), ewds.GetProjection(),nodata=nodata)
@@ -280,40 +399,52 @@ def verticalDisp(dem1file,dem2file,nsfile,ewfile,outf='VerticalDisp.tif'):
     '''Takes in two DEMs and two NS/EW displacment maps (as tifs), and creates a vertical displacement map.
     Note that it operates on a nearest neighbor assumption!!'''
 
-    # Read in all of the files
-    dem1 = gdal.Open(dem1file)
-    u1 = dem1.GetRasterBand(1).ReadAsArray()
-    dem2 = gdal.Open(dem2file)
-    u2 = dem2.GetRasterBand(1).ReadAsArray()
+    # Read displacement  files
     nsf = gdal.Open(nsfile)
     ns = nsf.GetRasterBand(1).ReadAsArray()
     ewf = gdal.Open(ewfile)
     ew = ewf.GetRasterBand(1).ReadAsArray()
 
 
-    rasterSize = np.shape(u1)
-    resolution = dem1.GetGeoTransform()[1]
-    nodata = dem1.GetRasterBand(1).GetNoDataValue()
-    nodata_mask = (dem1.GetRasterBand(1).ReadAsArray() != nodata)
-
-    U = np.zeros(rasterSize)
-
-    for y in range(0,rasterSize[0]):
-        for x in range(0,rasterSize[1]):
-
-            movY = np.round(ns[y,x]/resolution)
-            movX = np.round(ew[y,x]/resolution)
-
-            if int(y+movY) >= rasterSize[0] or int(x+movX) >= rasterSize[1] \
-                or int(y+movY) <= 0 or int(x+movX) <= 0:
-                U[y,x] = nodata
-            else:
-                d1 = u1[y,x]
-                d2 = u2[int(y+movY),int(x+movX)]
-
-                U[y,x] = d2 - d1
+    rasterSize = np.shape(ns)
+    resolution = nsf.GetGeoTransform()[1]
+    nodata = nsf.GetRasterBand(1).GetNoDataValue()
     
-    U[~nodata_mask] = nodata
+    # Precompute the movements and the target indices
+    movY = np.round(ns / resolution).astype(int)
+    movX = np.round(ew / resolution).astype(int)
+    
+
+    # Create boolean masks for invalid conditions
+    invalid_mask = (
+        np.isnan(ns) | np.isnan(ew) |
+        np.isnan(movY) | np.isnan(movX) |
+        (movY + np.arange(rasterSize[0]).reshape(-1, 1) >= rasterSize[0]) |
+        (movX + np.arange(rasterSize[1]) >= rasterSize[1]) |
+        (movY + np.arange(rasterSize[0]).reshape(-1, 1) < 0) |
+        (movX + np.arange(rasterSize[1]) < 0)
+    )
+    ns, ew = 0, 0
+
+    # Calculate the target indices, taking care of boundaries
+    targetY = np.clip(np.arange(rasterSize[0]).reshape(-1, 1) + movY, 0, rasterSize[0] - 1)
+    targetX = np.clip(np.arange(rasterSize[1]) + movX, 0, rasterSize[1] - 1)
+
+    movX, movY = 0, 0
+
+    dem1 = gdal.Open(dem1file)
+    u1 = dem1.GetRasterBand(1).ReadAsArray()
+    dem2 = gdal.Open(dem2file)
+    u2 = dem2.GetRasterBand(1).ReadAsArray()
+    
+    # Perform the computation for valid indices
+    d1 = u1
+    d2 = u2[targetY, targetX]
+
+    u1, u2 = 0, 0
+    
+    U = d2 - d1
+    U[invalid_mask] = nodata
     
     save_geotiff(U,outf, dem1.GetGeoTransform(), dem1.GetProjection(),nodata=nodata)
 
