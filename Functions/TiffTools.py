@@ -523,3 +523,64 @@ def verticalDispExtentAgnostic(dem1file, dem2file, nsfile, ewfile, outf='Vertica
         dst.write(U, 1)
 
     return U
+
+from scipy.ndimage import map_coordinates
+
+def verticalDispExtentAgnosticBilinInterp(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif'):
+    """
+    Computes vertical displacement using two DEMs and NS/EW displacement maps.
+    Replaces nearest-neighbor indexing with bilinear interpolation.
+    """
+
+    # Clip and align all rasters to the first DEM's grid
+    dem1_clipped, transform = reproject_raster_to_match(nsfile, dem1file)
+    dem2_clipped, _ = reproject_raster_to_match(nsfile, dem2file)
+    ns_clipped, _ = reproject_raster_to_match(nsfile, nsfile)
+    ew_clipped, _ = reproject_raster_to_match(nsfile, ewfile)
+
+    # Read metadata from one of the displacement files for reference
+    with rasterio.open(nsfile) as nsf:
+        resolution = nsf.transform[0]
+        nodata = nsf.nodata
+
+    # Calculate displacement in pixel coordinates
+    movY = ns_clipped / resolution
+    movX = ew_clipped / resolution
+
+    # Get grid indices for interpolation
+    y_indices, x_indices = np.meshgrid(np.arange(dem2_clipped.shape[0]),
+                                       np.arange(dem2_clipped.shape[1]),
+                                       indexing='ij')
+    targetY = y_indices + movY
+    targetX = x_indices + movX
+
+    # Mask invalid indices
+    invalid_mask = (
+        np.isnan(ns_clipped) | np.isnan(ew_clipped) |
+        (targetY < 0) | (targetY >= dem2_clipped.shape[0]) |
+        (targetX < 0) | (targetX >= dem2_clipped.shape[1])
+    )
+
+    # Interpolate the second DEM to the displaced locations
+    d2_interp = map_coordinates(dem2_clipped, [targetY, targetX], order=1, mode='nearest')
+    
+    # Compute vertical displacement
+    U = d2_interp - dem1_clipped
+    U[invalid_mask] = nodata
+
+    # Save result as a GeoTIFF
+    with rasterio.open(
+        outf,
+        "w",
+        driver="GTiff",
+        height=U.shape[0],
+        width=U.shape[1],
+        count=1,
+        dtype=U.dtype,
+        crs=rasterio.open(dem1file).crs,
+        transform=transform,
+        nodata=nodata,
+    ) as dst:
+        dst.write(U, 1)
+
+    return U
