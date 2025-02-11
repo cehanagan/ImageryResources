@@ -92,7 +92,7 @@ def save_geotiff(data, output_path, geotransform, projection,nodata=-9999):
     driver = gdal.GetDriverByName('GTiff')
 
     # Create the output GeoTIFF file (path, cols, rows, bands, dtype)
-    out_data = driver.Create(output_path, cols, rows, 1, gdal.GDT_Float64)
+    out_data = driver.Create(output_path, cols, rows, 1, gdal.GDT_Float32)
     # Set the geotransform and projection
     out_data.SetGeoTransform(geotransform)
     out_data.SetProjection(projection)
@@ -132,7 +132,7 @@ def curl_2d(vector_fieldx,vector_fieldy):
 def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
        Optional SRS code and bounds [ulx, uly, lrx, lry]. Cutline can be used to crop irregular shapes.
-       Output no data value is -999.'''
+       Output no data value is -9999.'''
     im = gdal.Open(tiffile)
     if im is None:
         print("Error: Unable to open the input file.")
@@ -145,7 +145,7 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     if outres is None:
         outres = [im.GetGeoTransform()[1], im.GetGeoTransform()[-1]]
     if interp is None:
-        interp = 'cubic'
+        interp = 'bilinear'
 
     nodata = -9999 if not isinstance(im.GetRasterBand(1).GetNoDataValue(), (int, float, complex)) else im.GetRasterBand(1).GetNoDataValue()
 
