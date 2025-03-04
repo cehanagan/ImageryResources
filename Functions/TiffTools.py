@@ -129,7 +129,7 @@ def curl_2d(vector_fieldx,vector_fieldy):
 
     return curl
 
-def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None):
+def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None,nodata=None):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
        Optional SRS code and bounds [ulx, uly, lrx, lry]. Cutline can be used to crop irregular shapes.
        Output no data value is -9999.'''
@@ -145,9 +145,9 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     if outres is None:
         outres = [im.GetGeoTransform()[1], im.GetGeoTransform()[-1]]
     if interp is None:
-        interp = 'bilinear'
-
-    nodata = -9999 if not isinstance(im.GetRasterBand(1).GetNoDataValue(), (int, float, complex)) else im.GetRasterBand(1).GetNoDataValue()
+        interp = 'near'
+    if nodata is None:
+        nodata = -9999 if not isinstance(im.GetRasterBand(1).GetNoDataValue(), (int, float, complex)) else im.GetRasterBand(1).GetNoDataValue()
 
     if im.RasterCount >= 3:
         print('Computing Gray from RGB values')
@@ -196,59 +196,60 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     return 
   
 def micmacPostProcessing(folder:str,
-                         prefile:str,
+                         prefiles:str,
                          outprefix:str=None):
     '''
     Takes a MicMac output folder, and uses gdal to calculate NS and EW displacement tifs, and corresponding correlation files.
     
     :param folder: folder with micmac results.
     :param type: str
-    :param prefile: file used as the reference image in the correlation.
+    :param prefiles: files used in the correlation.
     :param type: str
     :param dtype: gdal data type, defaults to gdal.GDT_Float32
     :type dtype: int
     '''
-    refim = gdal.Open(prefile)
-    gt = refim.GetGeoTransform()
+    refim1 = gdal.Open(prefiles[0])
+    refim2 = gdal.Open(prefiles[1])
+    gt = refim1.GetGeoTransform()
     res = gt[1]
-    refimNodata = refim.GetRasterBand(1).GetNoDataValue()
+    refimNodata = refim1.GetRasterBand(1).GetNoDataValue()
     if refimNodata == None:
-        print('Setting nodata value to 0, because reference had no specified value.')
-        refimNodata = 0
-    nodata_mask = (refim.GetRasterBand(1).ReadAsArray() != refimNodata)
-
+        print('Setting nodata value to -9999, because reference had no specified value.')
+        refimNodata = -9999
+    nodata_mask = ((refim1.GetRasterBand(1).ReadAsArray() != refimNodata) & (refim2.GetRasterBand(1).ReadAsArray() != refimNodata))
+    print('Nodata value for mask:',refimNodata)
     if outprefix is None:
         outprefix = folder
-    
+    print(f'Setting nodata value to -9999')
     # NS
     px2ds = gdal.Open(folder+'Px2_Num5_DeZoom1_LeChantier.tif')
     px2 = px2ds.GetRasterBand(1).ReadAsArray() * 0.05 * -1*res
     # Mask NoData values, considering only non-Nodata pixels
-    px2[~nodata_mask] = refimNodata
+    px2[~nodata_mask] = -9999
     # Save in a new, georeferenced file
     print('Saving',outprefix+'NSmicmac.tif')
-    save_geotiff(px2, outprefix+'NSmicmac.tif', geotransform=gt, projection=refim.GetProjection(),
-                 nodata=refimNodata)
+    save_geotiff(px2, outprefix+'NSmicmac.tif', geotransform=gt, projection=refim1.GetProjection(),
+                 nodata=-9999)
     px2ds = None
 
     # EW
     px1ds = gdal.Open(folder+'Px1_Num5_DeZoom1_LeChantier.tif')
     px1 = px1ds.GetRasterBand(1).ReadAsArray() * 0.05 * res
     # considering only non-Nodata pixels
-    px1[~nodata_mask] = refimNodata
+    px1[~nodata_mask] = -9999
     print('Saving',outprefix+'EWmicmac.tif')
-    save_geotiff(px1, outprefix+'EWmicmac.tif', geotransform=gt, projection=refim.GetProjection(),
-                 nodata=refimNodata)
+    save_geotiff(px1, outprefix+'EWmicmac.tif', geotransform=gt, projection=refim1.GetProjection(),
+                 nodata=-9999)
     px1ds = None
 
     # Correlation file
     correlds = gdal.Open(folder+'Correl_LeChantier_Num_5.tif')
     correl = (correlds.GetRasterBand(1).ReadAsArray()-127.5)/127.5
     # Mask NoData values, considering only non-Nodata pixels
-    correl[~nodata_mask] = refimNodata
+    correl[~nodata_mask] = -9999
     print('Saving',outprefix+'Correlmicmac.tif')
-    save_geotiff(correl, outprefix+'Correlmicmac.tif', geotransform=gt, projection=refim.GetProjection(),
-                 nodata=refimNodata)
+    save_geotiff(correl, outprefix+'Correlmicmac.tif', geotransform=gt, projection=refim1.GetProjection(),
+                 nodata=-9999)
     correlds = None
     refim = None
     return 
@@ -334,6 +335,80 @@ def micmacSimpleStack(infolderlist,outfolder):
     return 'Done!'
 
 
+def micmacAnyStack(infolderlist, outfolder):
+    """
+    Creates NS, EW stacked maps, weighted by correlation score, while handling NoData values.
+    
+    Each folder in infolderlist should contain:
+      - EWmicmac.tif
+      - NSmicmac.tif
+      - Correlmicmac.tif
+    
+    Parameters:
+        - infolderlist: List of folders containing input displacement maps
+        - outfolder: Output directory for stacked maps
+        - nodata_value: NoData value to use (if None, it will be inferred from the first file)
+    """
+    if not os.path.exists(outfolder):
+        os.makedirs(outfolder)
+    
+    nodata_value = -9999  # NoData value 
+
+    print(f"Using NoData value: {nodata_value}")
+
+    # Define displacement components
+    components = ["NS", "EW"]
+
+    for comp in components:
+        # Construct file lists dynamically
+        disp_files = [os.path.join(folder, f"{comp}micmac.tif") for folder in infolderlist]
+        corr_files = [os.path.join(folder, "Correlmicmac.tif") for folder in infolderlist]
+
+        # Build weighted sum formula
+        # eg for 4 input: 'A*E/(E+F+G+H)+B*F/(E+F+G+H)+C*G/(E+F+G+H)+D*H/(E+F+G+H)'
+        calc_expr = "+".join([f"(A{i}*C{i})/({"+".join([f"C{j}" for j in range(len(infolderlist))])})" for i in range(len(infolderlist))])
+        print(calc_expr)
+
+        # Prepare argument list for gdal_calc.py
+        calc_args = {f"A{i}": disp_files[i] for i in range(len(infolderlist))}
+        calc_args.update({f"C{i}": corr_files[i] for i in range(len(infolderlist))})
+        calc_args["calc"] = calc_expr
+        calc_args["outfile"] = os.path.join(outfolder, f"{comp}dispStacked.tif")
+        calc_args["NoDataValue"] = nodata_value
+
+        # Run gdal_calc
+        gdal_calc.Calc(**calc_args)
+
+        print(calc_args)
+
+        # nodata is reset to another value, change:
+        ds = gdal.Open(os.path.join(outfolder, f"{comp}dispStacked.tif"), gdal.GA_Update)
+        band = ds.GetRasterBand(1)
+        band.SetNoDataValue(-9999)
+        band.FlushCache()
+        ds = None
+
+    # Compute sum of correlation scores, ignoring NoData values
+    calc_expr_corr = "+".join([f"A{i}" for i in range(len(infolderlist))])
+    gdal_calc.Calc(
+        calc=calc_expr_corr,
+        **{f"A{i}": corr_files[i] for i in range(len(infolderlist))},
+        outfile=os.path.join(outfolder, "CorreldispStacked.tif"),
+        NoDataValue=nodata_value
+    )
+
+    # nodata is reset to another value, change:
+    ds = gdal.Open(os.path.join(outfolder, "CorreldispStacked.tif"), gdal.GA_Update)
+    band = ds.GetRasterBand(1)
+    band.SetNoDataValue(-9999)
+    band.FlushCache()
+    ds = None
+
+
+    return "Done!"
+
+
+
 def micmacStackUD(infolderlist,outfolder):
     '''
     Creates UD stacked map, weighted by correlation score. 
@@ -393,7 +468,6 @@ def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif=
 
     save_geotiff(par,partif, ewds.GetGeoTransform(), ewds.GetProjection(),nodata=nodata)
     save_geotiff(perp,perptif, ewds.GetGeoTransform(), ewds.GetProjection(),nodata=nodata)
-
     ewds = None
     nsds = None
     return par, perp
