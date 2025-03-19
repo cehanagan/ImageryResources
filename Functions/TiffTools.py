@@ -460,10 +460,10 @@ def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif=
     ns = nsds.GetRasterBand(1).ReadAsArray()
 
     # Rotation from en (xy) to fault parallel and perp, must convert azimuth
-    theta = (90-azimuth)*np.pi/180
-    par = ns*np.cos(theta)+ew*np.sin(theta)
+    theta = (azimuth)*np.pi/180
+    par = ns*np.cos(theta)-ew*np.sin(theta)
     par[~nodata_mask] = nodata
-    perp = -1*ns*np.sin(theta)+ew*np.cos(theta)
+    perp = ns*np.sin(theta)+ew*np.cos(theta)
     perp[~nodata_mask] = nodata
 
     save_geotiff(par,partif, ewds.GetGeoTransform(), ewds.GetProjection(),nodata=nodata)
