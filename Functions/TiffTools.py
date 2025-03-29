@@ -6,6 +6,8 @@ import rasterio
 from rasterio.warp import reproject, Resampling
 import os
 
+import scipy.ndimage
+
 def plot_tiff(file:str,mask:list=None,cmap:str=None,name:str=None):
     '''
     Plot band 1 of a tiff file. 
@@ -472,7 +474,7 @@ def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif=
     nsds = None
     return par, perp
 
-def verticalDisp(dem1file,dem2file,nsfile,ewfile,outf='VerticalDisp.tif'):
+def verticalDispNear(dem1file,dem2file,nsfile,ewfile,outf='VerticalDisp.tif'):
     '''Takes in two DEMs and two NS/EW displacment maps (as tifs), and creates a vertical displacement map.
     Note that it operates on a nearest neighbor assumption!!'''
 
@@ -526,6 +528,66 @@ def verticalDisp(dem1file,dem2file,nsfile,ewfile,outf='VerticalDisp.tif'):
     save_geotiff(U,outf, dem1.GetGeoTransform(), dem1.GetProjection(),nodata=nodata)
 
     return U
+
+
+def verticalDispBilin(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif'):
+    '''Computes vertical displacement without nearest-neighbor assumption, using bilinear interpolation.'''
+
+    # Read displacement files
+    nsf = gdal.Open(nsfile)
+    ewf = gdal.Open(ewfile)
+
+    ns = nsf.GetRasterBand(1).ReadAsArray()
+    ew = ewf.GetRasterBand(1).ReadAsArray()
+
+    # Get raster properties
+    geotransform = nsf.GetGeoTransform()
+    resolution = geotransform[1]
+    nodata = nsf.GetRasterBand(1).GetNoDataValue()
+    
+    nsf, ewf = None, None  # Free file handlers
+
+    # Read DEMs
+    dem1 = gdal.Open(dem1file)
+    dem2 = gdal.Open(dem2file)
+    
+    u1 = dem1.GetRasterBand(1).ReadAsArray()
+    u2 = dem2.GetRasterBand(1).ReadAsArray()
+
+    # Raster size
+    rows, cols = ns.shape
+    
+    # Compute displacement in pixel space
+    movY = ns / resolution  # Displacement in Y (North-South)
+    movX = ew / resolution  # Displacement in X (East-West)
+
+    # Create the target coordinates
+    y_grid, x_grid = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
+    targetY = y_grid + movY
+    targetX = x_grid + movX
+
+    # Create boolean mask for valid indices
+    valid_mask = (
+        ~np.isnan(targetX) & ~np.isnan(targetY) &
+        (targetX >= 0) & (targetX < cols - 1) &
+        (targetY >= 0) & (targetY < rows - 1)
+    )
+
+    # Apply bilinear interpolation only for valid pixels
+    d2 = np.full_like(u1, nodata, dtype=np.float32)
+    d2[valid_mask] = scipy.ndimage.map_coordinates(
+        u2, [targetY[valid_mask], targetX[valid_mask]], order=3, mode='nearest'
+    )
+
+    # Compute vertical displacement
+    U = d2 - u1
+    U[~valid_mask] = nodata  # Assign NoData where interpolation is invalid
+
+    # Save output
+    save_geotiff(U, outf, dem1.GetGeoTransform(), dem1.GetProjection(), nodata=nodata)
+
+    return U
+
 
 def reproject_raster_to_match(ref_raster, raster_file):
     with rasterio.open(ref_raster) as ref_src, rasterio.open(raster_file) as src:
