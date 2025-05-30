@@ -6,32 +6,7 @@ import rasterio
 from rasterio.warp import reproject, Resampling
 import os
 
-import scipy.ndimage
-
-def plot_tiff(file:str,mask:list=None,cmap:str=None,name:str=None):
-    '''
-    Plot band 1 of a tiff file. 
-    :param file: File name
-    :param type: str
-    :param mask: Min and Max values for masking the array. e.g. [0,1]
-    :param type: list
-    :param cmap: Maplotlib colormap for vizualization.
-    :param type: str
-    :param name: Title
-    :param type: str
-    :return: matplotlib.pyplot fig and ax
-    :rtype: matplotlib.figure.Figure, matplotlib.axes._axes.Axes
-    '''
-    tiff = gdal.Open(file)
-    imarray = tiff.GetRasterBand(1).ReadAsArray()
-    if mask == None:
-        mask = [np.min(imarray), np.max(imarray)]
-    masked = np.clip(imarray, mask[0], mask[1])
-    fig, ax = plt.subplots()
-    ax.imshow(masked)
-    plt.show()
-    tiff = None
-    return fig, ax
+from scipy import ndimage
 
 def make_tfw(file:str,outprefix:str):
     '''
@@ -85,16 +60,24 @@ def getOverlap(im1, im2):
     print('minx, miny, maxx, maxy:')
     print(minx, miny, maxx, maxy)
     return [minx, miny, maxx, maxy]  
-
-def save_geotiff(data, output_path, geotransform, projection,nodata=-9999):
+    
+def save_geotiff(data, output_path, geotransform, projection, nodata=-9999):
     # Get the shape of the input data
     rows, cols = data.shape
 
     # Create a driver
     driver = gdal.GetDriverByName('GTiff')
 
-    # Create the output GeoTIFF file (path, cols, rows, bands, dtype)
-    out_data = driver.Create(output_path, cols, rows, 1, gdal.GDT_Float32)
+    # Define creation options
+    creation_options = [
+        'COMPRESS=LZW',      # LZW compression
+        'ZLEVEL=9',          # Maximum compression level
+        'BIGTIFF=YES'        # Enable BigTIFF support
+    ]
+
+    # Create the output GeoTIFF file with creation options
+    out_data = driver.Create(output_path, cols, rows, 1, gdal.GDT_Float32, options=creation_options)
+
     # Set the geotransform and projection
     out_data.SetGeoTransform(geotransform)
     out_data.SetProjection(projection)
@@ -105,7 +88,7 @@ def save_geotiff(data, output_path, geotransform, projection,nodata=-9999):
 
     # Close the file
     out_data = None
-    return 
+    return
 
 def curl_2d(vector_fieldx,vector_fieldy):
     """
@@ -158,8 +141,8 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
         G = im.GetRasterBand(2).ReadAsArray()
         B = im.GetRasterBand(3).ReadAsArray()
         # Mask NoData values
-        nodata_mask = (R != nodata) & \
-                      (G != nodata) & \
+        nodata_mask = (R != nodata) | \
+                      (G != nodata) | \
                       (B != nodata)
         # Create a grayscale version of the bands, considering only non-Nodata pixels
         grayscale_band = 0.2989 * R + 0.5870 * G + 0.1140 * B
@@ -218,7 +201,7 @@ def micmacPostProcessing(folder:str,
     if refimNodata == None:
         print('Setting nodata value to -9999, because reference had no specified value.')
         refimNodata = -9999
-    nodata_mask = ((refim1.GetRasterBand(1).ReadAsArray() != refimNodata) & (refim2.GetRasterBand(1).ReadAsArray() != refimNodata))
+    nodata_mask = ((refim1.GetRasterBand(1).ReadAsArray() != refimNodata) | (refim2.GetRasterBand(1).ReadAsArray() != refimNodata))
     print('Nodata value for mask:',refimNodata)
     if outprefix is None:
         outprefix = folder
@@ -463,9 +446,11 @@ def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif=
 
     # Rotation from en (xy) to fault parallel and perp, must convert azimuth
     theta = (azimuth)*np.pi/180
-    par = ns*np.cos(theta)-ew*np.sin(theta)
+    #par = ns*np.cos(theta)-ew*np.sin(theta)
+    par = ns*np.cos(theta)+ew*np.sin(theta)
     par[~nodata_mask] = nodata
-    perp = ns*np.sin(theta)+ew*np.cos(theta)
+    #perp = ns*np.sin(theta)+ew*np.cos(theta)
+    perp = -1*ns*np.sin(theta)+ew*np.cos(theta)
     perp[~nodata_mask] = nodata
 
     save_geotiff(par,partif, ewds.GetGeoTransform(), ewds.GetProjection(),nodata=nodata)
@@ -538,13 +523,15 @@ def verticalDispBilin(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif
     ewf = gdal.Open(ewfile)
 
     ns = nsf.GetRasterBand(1).ReadAsArray()
+    ns[ns == nsf.GetRasterBand(1).GetNoDataValue()] = np.nan
     ew = ewf.GetRasterBand(1).ReadAsArray()
+    ew[ew == ewf.GetRasterBand(1).GetNoDataValue()] = np.nan
 
     # Get raster properties
     geotransform = nsf.GetGeoTransform()
     resolution = geotransform[1]
     nodata = nsf.GetRasterBand(1).GetNoDataValue()
-    
+
     nsf, ewf = None, None  # Free file handlers
 
     # Read DEMs
@@ -552,7 +539,11 @@ def verticalDispBilin(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif
     dem2 = gdal.Open(dem2file)
     
     u1 = dem1.GetRasterBand(1).ReadAsArray()
+    u1[u1 == dem1.GetRasterBand(1).GetNoDataValue()] = np.nan
     u2 = dem2.GetRasterBand(1).ReadAsArray()
+    u2[u2 == dem2.GetRasterBand(1).GetNoDataValue()] = 0 # zero becuase if nan, will hang up later on map_coordinates
+
+    print('Rasters are same shape:', np.shape(ns)==np.shape(ew)==np.shape(u1)==np.shape(u2))
 
     # Raster size
     rows, cols = ns.shape
@@ -561,21 +552,25 @@ def verticalDispBilin(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif
     movY = ns / resolution  # Displacement in Y (North-South)
     movX = ew / resolution  # Displacement in X (East-West)
 
+    ns, ew, dem2 = None, None, None
+
     # Create the target coordinates
     y_grid, x_grid = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
     targetY = y_grid + movY
     targetX = x_grid + movX
 
+    movY, movX = None, None
+
     # Create boolean mask for valid indices
     valid_mask = (
-        ~np.isnan(targetX) & ~np.isnan(targetY) &
-        (targetX >= 0) & (targetX < cols - 1) &
-        (targetY >= 0) & (targetY < rows - 1)
+        ~np.isnan(targetX) | ~np.isnan(targetY) |
+        (targetX >= 0) | (targetX < cols - 1) |
+        (targetY >= 0) | (targetY < rows - 1)
     )
 
     # Apply bilinear interpolation only for valid pixels
-    d2 = np.full_like(u1, nodata, dtype=np.float32)
-    d2[valid_mask] = scipy.ndimage.map_coordinates(
+    d2 = np.full_like(u1,0, dtype=np.float32)
+    d2[valid_mask] = ndimage.map_coordinates(
         u2, [targetY[valid_mask], targetX[valid_mask]], order=3, mode='nearest'
     )
 
@@ -587,136 +582,5 @@ def verticalDispBilin(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif
     save_geotiff(U, outf, dem1.GetGeoTransform(), dem1.GetProjection(), nodata=nodata)
 
     return U
-
-
-def reproject_raster_to_match(ref_raster, raster_file):
-    with rasterio.open(ref_raster) as ref_src, rasterio.open(raster_file) as src:
-        # Read the source raster data
-        data = src.read(1)
-
-        # Reproject raster data to match reference raster's transform and CRS
-        aligned_data = np.empty((ref_src.height, ref_src.width), dtype=src.dtypes[0])
-        reproject(
-            source=data,
-            destination=aligned_data,
-            src_transform=src.transform,
-            src_crs=src.crs,
-            dst_transform=ref_src.transform,
-            dst_crs=ref_src.crs,
-            resampling=Resampling.bilinear
-        )
-        return aligned_data, ref_src.transform
     
-def verticalDispExtentAgnostic(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif'):
-    """
-    Takes in two DEMs and two NS/EW displacement maps (as tifs), and creates a vertical displacement map.
-    Operates on a nearest-neighbor assumption.
-    """
-    # Clip and align all rasters to the first DEM's grid
-    dem1_clipped, transform = reproject_raster_to_match(nsfile, dem1file)
-    dem2_clipped, _ = reproject_raster_to_match(nsfile, dem2file)
-    ns_clipped, _ = reproject_raster_to_match(nsfile, nsfile)
-    ew_clipped, _ = reproject_raster_to_match(nsfile, ewfile)
 
-    # Read metadata from one of the displacement files for reference
-    with rasterio.open(nsfile) as nsf:
-        resolution = nsf.transform[0]
-        nodata = nsf.nodata
-    raster_size = ns_clipped.shape
-    # Precompute the movements and the target indices
-    movY = np.round(ns_clipped / resolution).astype(int)
-    movX = np.round(ew_clipped / resolution).astype(int)
-    # Create boolean masks for invalid conditions
-    invalid_mask = (
-        np.isnan(ns_clipped) | np.isnan(ew_clipped) |
-        (movY + np.arange(raster_size[0]).reshape(-1, 1) >= raster_size[0]) |
-        (movX + np.arange(raster_size[1]) >= raster_size[1]) |
-        (movY + np.arange(raster_size[0]).reshape(-1, 1) < 0) |
-        (movX + np.arange(raster_size[1]) < 0)
-    )
-    # Calculate the target indices, taking care of boundaries
-    targetY = np.clip(np.arange(raster_size[0]).reshape(-1, 1) + movY, 0, raster_size[0] - 1)
-    targetX = np.clip(np.arange(raster_size[1]) + movX, 0, raster_size[1] - 1)
-    # Perform the computation for valid indices
-    d1 = dem1_clipped
-    d2 = dem2_clipped[targetY, targetX]
-    # Compute vertical displacement
-    U = d2 - d1
-    U[invalid_mask] = nodata
-    # Save result as a GeoTIFF
-    with rasterio.open(
-        outf,
-        "w",
-        driver="GTiff",
-        height=U.shape[0],
-        width=U.shape[1],
-        count=1,
-        dtype=U.dtype,
-        crs=rasterio.open(dem1file).crs,
-        transform=transform,
-        nodata=nodata,
-    ) as dst:
-        dst.write(U, 1)
-
-    return U
-
-from scipy.ndimage import map_coordinates
-
-def verticalDispExtentAgnosticBilinInterp(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif'):
-    """
-    Computes vertical displacement using two DEMs and NS/EW displacement maps.
-    Replaces nearest-neighbor indexing with bilinear interpolation.
-    """
-
-    # Clip and align all rasters to the first DEM's grid
-    dem1_clipped, transform = reproject_raster_to_match(nsfile, dem1file)
-    dem2_clipped, _ = reproject_raster_to_match(nsfile, dem2file)
-    ns_clipped, _ = reproject_raster_to_match(nsfile, nsfile)
-    ew_clipped, _ = reproject_raster_to_match(nsfile, ewfile)
-
-    # Read metadata from one of the displacement files for reference
-    with rasterio.open(nsfile) as nsf:
-        resolution = nsf.transform[0]
-        nodata = nsf.nodata
-
-    # Calculate displacement in pixel coordinates
-    movY = ns_clipped / resolution
-    movX = ew_clipped / resolution
-
-    # Get grid indices for interpolation
-    y_indices, x_indices = np.meshgrid(np.arange(dem2_clipped.shape[0]),
-                                       np.arange(dem2_clipped.shape[1]),
-                                       indexing='ij')
-    targetY = y_indices + movY
-    targetX = x_indices + movX
-
-    # Mask invalid indices
-    invalid_mask = (
-        np.isnan(ns_clipped) | np.isnan(ew_clipped) |
-        (targetY < 0) | (targetY >= dem2_clipped.shape[0]) |
-        (targetX < 0) | (targetX >= dem2_clipped.shape[1])
-    )
-
-    # Interpolate the second DEM to the displaced locations
-    d2_interp = map_coordinates(dem2_clipped, [targetY, targetX], order=1, mode='nearest')
-    
-    # Compute vertical displacement
-    U = d2_interp - dem1_clipped
-    U[invalid_mask] = nodata
-
-    # Save result as a GeoTIFF
-    with rasterio.open(
-        outf,
-        "w",
-        driver="GTiff",
-        height=U.shape[0],
-        width=U.shape[1],
-        count=1,
-        dtype=U.dtype,
-        crs=rasterio.open(dem1file).crs,
-        transform=transform,
-        nodata=nodata,
-    ) as dst:
-        dst.write(U, 1)
-
-    return U
