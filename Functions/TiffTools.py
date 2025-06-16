@@ -515,72 +515,68 @@ def verticalDispNear(dem1file,dem2file,nsfile,ewfile,outf='VerticalDisp.tif'):
     return U
 
 
+
 def verticalDispBilin(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif'):
-    '''Computes vertical displacement without nearest-neighbor assumption, using bilinear interpolation.'''
+    """Compute vertical displacement using bilinear interpolation of DEM2."""
+    
+    # --- Read displacement fields ---
+    ns_ds = gdal.Open(nsfile)
+    ew_ds = gdal.Open(ewfile)
+    ns = ns_ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+    ew = ew_ds.GetRasterBand(1).ReadAsArray().astype(np.float32)
+    nodata = ns_ds.GetRasterBand(1).GetNoDataValue()
 
-    # Read displacement files
-    nsf = gdal.Open(nsfile)
-    ewf = gdal.Open(ewfile)
+    # Mask invalid values
+    ns[ns == nodata] = np.nan
+    ew[ew == nodata] = np.nan
 
-    ns = nsf.GetRasterBand(1).ReadAsArray()
-    ns[ns == nsf.GetRasterBand(1).GetNoDataValue()] = np.nan
-    ew = ewf.GetRasterBand(1).ReadAsArray()
-    ew[ew == ewf.GetRasterBand(1).GetNoDataValue()] = np.nan
-
-    # Get raster properties
-    geotransform = nsf.GetGeoTransform()
+    geotransform = ns_ds.GetGeoTransform()
     resolution = geotransform[1]
-    nodata = nsf.GetRasterBand(1).GetNoDataValue()
+    ns_ds, ew_ds = None, None  # Close displacement datasets
 
-    nsf, ewf = None, None  # Free file handlers
-
-    # Read DEMs
+    # --- Read DEMs ---
     dem1 = gdal.Open(dem1file)
     dem2 = gdal.Open(dem2file)
-    
-    u1 = dem1.GetRasterBand(1).ReadAsArray()
+    u1 = dem1.GetRasterBand(1).ReadAsArray().astype(np.float32)
+    u2 = dem2.GetRasterBand(1).ReadAsArray().astype(np.float32)
     u1[u1 == dem1.GetRasterBand(1).GetNoDataValue()] = np.nan
-    u2 = dem2.GetRasterBand(1).ReadAsArray()
-    u2[u2 == dem2.GetRasterBand(1).GetNoDataValue()] = 0 # zero becuase if nan, will hang up later on map_coordinates
+    u2[u2 == dem2.GetRasterBand(1).GetNoDataValue()] = np.nan
 
-    print('Rasters are same shape:', np.shape(ns)==np.shape(ew)==np.shape(u1)==np.shape(u2))
-
-    # Raster size
-    rows, cols = ns.shape
+    print("Raster shapes:", ns.shape, ew.shape, u1.shape, u2.shape)
     
-    # Compute displacement in pixel space
-    movY = ns / resolution  # Displacement in Y (North-South)
-    movX = ew / resolution  # Displacement in X (East-West)
+    # --- Compute pixel displacements ---
+    movY = ns / resolution
+    movX = ew / resolution
+    ns, ew = None, None  # Free memory
 
-    ns, ew, dem2 = None, None, None
-
-    # Create the target coordinates
+    rows, cols = u1.shape
     y_grid, x_grid = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
     targetY = y_grid + movY
     targetX = x_grid + movX
+    movY, movX = None, None  # Free memory
 
-    movY, movX = None, None
+    # --- Interpolate u2 at displaced positions ---
+    interp_u2 = ndimage.map_coordinates(u2, [targetY, targetX], order=1, mode='nearest')
 
-    # Create boolean mask for valid indices
-    valid_mask = (
-        ~np.isnan(targetX) | ~np.isnan(targetY) |
-        (targetX >= 0) | (targetX < cols - 1) |
-        (targetY >= 0) | (targetY < rows - 1)
+    # Mask invalid values (NaNs or out-of-bounds)
+    invalid_mask = (
+        np.isnan(targetX) | np.isnan(targetY) |
+        (targetX < 0) | (targetX >= cols - 1) |
+        (targetY < 0) | (targetY >= rows - 1)
     )
+    interp_u2[invalid_mask] = np.nan
+    interp_u2[np.isnan(u1)] = np.nan
 
-    # Apply bilinear interpolation only for valid pixels
-    d2 = np.full_like(u1,0, dtype=np.float32)
-    d2[valid_mask] = ndimage.map_coordinates(
-        u2, [targetY[valid_mask], targetX[valid_mask]], order=3, mode='nearest'
-    )
+    # --- Compute vertical displacement ---
+    vertical_disp = interp_u2 - u1
+    vertical_disp[np.isnan(vertical_disp)] = nodata
 
-    # Compute vertical displacement
-    U = d2 - u1
-    U[~valid_mask] = nodata  # Assign NoData where interpolation is invalid
+    # --- Save output ---
+    save_geotiff(vertical_disp, outf, dem1.GetGeoTransform(), dem1.GetProjection(), nodata)
+    print(f"Saved vertical displacement to: {outf}")
 
-    # Save output
-    save_geotiff(U, outf, dem1.GetGeoTransform(), dem1.GetProjection(), nodata=nodata)
+    return vertical_disp
 
-    return U
+
     
 
