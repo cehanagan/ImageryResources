@@ -8,6 +8,12 @@ import os
 
 from scipy import ndimage
 
+def projectParPerp(ns, ew, az):
+    theta = (az)*np.pi/180
+    par = ns*np.cos(theta)+ew*np.sin(theta)
+    perp = -1*ns*np.sin(theta)+ew*np.cos(theta)
+    return par.flatten(), perp.flatten()
+
 def make_tfw(file:str,outprefix:str):
     '''
     Takes in a tiff file name and produces the legacy tfw file:
@@ -201,7 +207,7 @@ def micmacPostProcessing(folder:str,
     if refimNodata == None:
         print('Setting nodata value to -9999, because reference had no specified value.')
         refimNodata = -9999
-    nodata_mask = ((refim1.GetRasterBand(1).ReadAsArray() != refimNodata) | (refim2.GetRasterBand(1).ReadAsArray() != refimNodata))
+    nodata_mask = ((refim1.GetRasterBand(1).ReadAsArray() == refimNodata) | (refim2.GetRasterBand(1).ReadAsArray() == refimNodata))
     print('Nodata value for mask:',refimNodata)
     if outprefix is None:
         outprefix = folder
@@ -210,7 +216,7 @@ def micmacPostProcessing(folder:str,
     px2ds = gdal.Open(folder+'Px2_Num5_DeZoom1_LeChantier.tif')
     px2 = px2ds.GetRasterBand(1).ReadAsArray() * 0.05 * -1*res
     # Mask NoData values, considering only non-Nodata pixels
-    px2[~nodata_mask] = -9999
+    px2[nodata_mask] = -9999
     # Save in a new, georeferenced file
     print('Saving',outprefix+'NSmicmac.tif')
     save_geotiff(px2, outprefix+'NSmicmac.tif', geotransform=gt, projection=refim1.GetProjection(),
@@ -221,7 +227,7 @@ def micmacPostProcessing(folder:str,
     px1ds = gdal.Open(folder+'Px1_Num5_DeZoom1_LeChantier.tif')
     px1 = px1ds.GetRasterBand(1).ReadAsArray() * 0.05 * res
     # considering only non-Nodata pixels
-    px1[~nodata_mask] = -9999
+    px1[nodata_mask] = -9999
     print('Saving',outprefix+'EWmicmac.tif')
     save_geotiff(px1, outprefix+'EWmicmac.tif', geotransform=gt, projection=refim1.GetProjection(),
                  nodata=-9999)
@@ -231,7 +237,7 @@ def micmacPostProcessing(folder:str,
     correlds = gdal.Open(folder+'Correl_LeChantier_Num_5.tif')
     correl = (correlds.GetRasterBand(1).ReadAsArray()-127.5)/127.5
     # Mask NoData values, considering only non-Nodata pixels
-    correl[~nodata_mask] = -9999
+    correl[nodata_mask] = -9999
     print('Saving',outprefix+'Correlmicmac.tif')
     save_geotiff(correl, outprefix+'Correlmicmac.tif', geotransform=gt, projection=refim1.GetProjection(),
                  nodata=-9999)
@@ -458,6 +464,7 @@ def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif=
     ewds = None
     nsds = None
     return par, perp
+
 
 def verticalDispNear(dem1file,dem2file,nsfile,ewfile,outf='VerticalDisp.tif'):
     '''Takes in two DEMs and two NS/EW displacment maps (as tifs), and creates a vertical displacement map.
