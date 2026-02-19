@@ -120,6 +120,34 @@ def curl_2d(vector_fieldx,vector_fieldy):
 
     return curl
 
+def dilation_curl_2d(vector_fieldx, vector_fieldy):
+    """
+    Compute the dilation (divergence) and curl of a 2D vector field.
+
+    Parameters:
+        vector_fieldx (numpy.ndarray): 2D array of the x-component of the vector field.
+        vector_fieldy (numpy.ndarray): 2D array of the y-component of the vector field.
+
+    Returns:
+        dilation (numpy.ndarray): 2D array of the dilation (∂ux/∂x + ∂uy/∂y).
+        curl (numpy.ndarray): 2D array of the curl (∂uy/∂x − ∂ux/∂y).
+    """
+    # Extract components
+    ux = vector_fieldx  # x component
+    uy = vector_fieldy  # y component
+
+    # Calculate spatial derivatives
+    dux_dy, dux_dx = np.gradient(ux)
+    duy_dy, duy_dx = np.gradient(uy)
+
+    # Compute dilation (divergence)
+    dilation = dux_dx + duy_dy
+
+    # Compute curl (out-of-plane scalar curl)
+    curl = duy_dx - dux_dy
+
+    return dilation, curl
+
 def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None,nodata=None):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
        Optional SRS code and bounds [ulx, uly, lrx, lry]. Cutline can be used to crop irregular shapes.
