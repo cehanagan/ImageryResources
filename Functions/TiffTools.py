@@ -884,6 +884,12 @@ def sample_swath(raster, fault_point_x, fault_point_y, fault_az_deg, profile_len
     raster_samps[raster_samps == -9999] = np.nan
     return raster_samps, pts, dists
 
+def projectParPerp(ns, ew, az):
+    theta = (az)*np.pi/180
+    par = ns*np.cos(theta)+ew*np.sin(theta)
+    perp = -1*ns*np.sin(theta)+ew*np.cos(theta)
+    return par.flatten(), perp.flatten()
+
 def erf_function_noslope(x, a, b, c, ws):
     '''From Milliner et al., 2021
     The solved parameters include the intercept (a), the total fault displacement (b), 
@@ -896,16 +902,29 @@ def erf_function(x, a, b, c, ws, m):
     the fault location (c), the shear width (ws), and the slope (m),'''
     return a+b/2*erf((x-c)/(ws*np.sqrt(2)))+m*x
 
-def projectParPerp(ns, ew, az):
-    theta = (az)*np.pi/180
-    par = ns*np.cos(theta)+ew*np.sin(theta)
-    perp = -1*ns*np.sin(theta)+ew*np.cos(theta)
-    return par.flatten(), perp.flatten()
+def erf_function_twoslope(x, a, b, c, ws, m1, m2):
+    '''From Milliner et al., 2021
+    The solved parameters include the intercept (a), the total fault displacement (b), 
+    the fault location (c), the shear width (ws), and the slope (m),'''
+    return a+b/2*erf((x-c)/(ws*np.sqrt(2)))+ np.where(x > c, m2 * (x - c), m1 * (x - c)) 
+
+# arctan function with independent slopes for upper and lower asymptotes
+
+def fit_arctan_independent_slopes(x, a, b, c, m1, m2, d): 
+    '''
+    ( m_1 ) is the slope of the upper asymptote,
+    ( m_2 ) is the slope of the lower asymptote
+    ( a ) is the amplitude,
+    ( b ) controls the steepness of the curve,
+    ( c ) is the x-value of the midpoint,
+    ( d ) is the vertical shift
+    '''
+    return a * np.arctan(b * (x - c)) + np.where(x >= c, m1 * (x - c), m2 * (x - c)) + d
 
 
 def erf_curve_fit(samps, dists, bounds=None):
     if bounds is None:
-        bounds = ((-np.inf,np.nanmin(samps),dists.min(),0,-np.inf),(np.inf,np.nanmax(samps),dists.max(),2*dists.max(),np.inf))
+        bounds = ((-np.inf,np.nanmin(samps)*2,dists.min(),0,-np.inf),(np.inf,np.nanmax(samps)*2,dists.max(),2*dists.max(),np.inf))
     # Try fit
     try:
         popt, pcov = curve_fit(erf_function, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=10000,bounds=bounds)
@@ -925,7 +944,7 @@ def erf_curve_fit(samps, dists, bounds=None):
 
 def erf_curve_fit_noslope(samps, dists, bounds=None):
     if bounds is None:
-        bounds = ((-np.inf,np.nanmin(samps)*10,dists.min(),0),(np.inf,np.nanmax(samps)*10,dists.max(),2*dists.max()))
+        bounds = ((-np.inf,np.nanmin(samps)*2,dists.min(),0),(np.inf,np.nanmax(samps)*2,dists.max(),2*dists.max()))
     # Try fit
     try:
         popt, pcov = curve_fit(erf_function_noslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=10000,bounds=bounds)
@@ -940,3 +959,38 @@ def erf_curve_fit_noslope(samps, dists, bounds=None):
         print('Fit failed.')
         return (np.nan,) * 7
     return (intercept,total_offset, fault_loc, shear_width, total_offset_sig, fault_loc_sig, shear_width_sig)
+
+def erf_curve_fit_twoslope(samps, dists, bounds=None):
+    if bounds is None:
+        max_diff = np.nanmax(samps)-np.nanmin(samps)
+        max_width = (dists.max() if dists.max() < 5000 else 5000)
+        # a, b, c, ws, m1, m2
+        bounds = ((-np.inf,-max_diff,dists.min()/2,0,-max_diff/np.nanmax(dists),-max_diff/np.nanmax(dists)),
+                  (np.inf,max_diff,dists.max()/2,max_width,max_diff/np.nanmax(dists),max_diff/np.nanmax(dists)))
+    # Try fit
+    try:
+        popt, pcov = curve_fit(erf_function_twoslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=10000,bounds=bounds)
+        intercept = popt[0]
+        fault_loc_offset = popt[1]
+        fault_loc = popt[2]
+        shear_width = popt[3]
+        total_offset_sig = np.sqrt(pcov[1, 1])
+        fault_loc_sig = np.sqrt(pcov[2, 2])
+        shear_width_sig = np.sqrt(pcov[3, 3])
+        slope1 = popt[4]
+        slope1_sig = np.sqrt(pcov[4, 4])
+        slope2 = popt[5]
+        slope2_sig = np.sqrt(pcov[5, 5])
+        of1, of2 = erf_function_twoslope([fault_loc+shear_width*2,fault_loc-shear_width*2], *popt)
+        fzw_offset = of2 - of1
+        full_erf = erf_function_twoslope(dists, *popt)
+        max_offset = full_erf.max() - full_erf.min()
+        ep_offset = full_erf[1] - full_erf[-1]
+        print('Returning intercept, offset at fault location, shifted fault location, 1/2 1 std shear width (4 shear width is 2 sigma \
+              fault zone width), uncertainties for those parameters, then lhs slope and uncertainty, and rhs slope and uncertainty). \
+              Other derived parameters are the offset at the edges of the 2 sigma shear zone, the max offset, and the endpoint offset.\
+                The latter two are from left to right across profile.')
+    except:
+        print('Fit failed.')
+        return (np.nan,) * 14
+    return (intercept,fault_loc_offset, fault_loc, shear_width, total_offset_sig, fault_loc_sig, shear_width_sig, slope1, slope1_sig, slope2, slope2_sig, fzw_offset, max_offset, ep_offset)
