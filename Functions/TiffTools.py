@@ -2,11 +2,18 @@ from osgeo import gdal, ogr
 from osgeo_utils import gdal_calc
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import rasterio
 from rasterio.warp import reproject, Resampling
 import os
 
 from scipy import ndimage
+from scipy.special import erf
+from scipy.optimize import curve_fit
+
+from pyproj import Proj, Geod
+import geopandas as gpd
+from shapely.geometry import Point, LineString, Polygon
 
 def projectParPerp(ns, ew, az):
     theta = (az)*np.pi/180
@@ -613,5 +620,377 @@ def verticalDispBilin(dem1file, dem2file, nsfile, ewfile, outf='VerticalDisp.tif
     return vertical_disp
 
 
-    
+### Profile tools
+def calcSlopeFrom2Pts(x1,y1,x2,y2):
+    '''calculate the slope of a line from two points and the strike of that line in degrees from X AXIS
+    returns slope, strike'''
+    slope = (y2-y1)/(x2-x1)
+    strike = np.degrees(np.arctan(slope)) #this is not from NORTH!! this would be from the x-axis (math, not geology)
+    return slope, strike
 
+def calcAzimuthFromNorth(x1,y1,x2,y2):
+    '''calculate the azimuth (strike) of a line from North using two points'''
+    dx = x2 - x1
+    dy = y2 - y1
+
+    # make sure dx and dy are not zero. 
+    if (dx == 0.0):
+        dx = 0.000001
+    if (dy == 0.0):
+        dy = 0.000001
+
+    #Calculate angle
+    angle = np.degrees(np.abs(np.arctan(dy/dx))) #* (180/np.pi)))
+    
+    #first quadrant
+    if (x2>=x1) and (y2>y1):
+        azimuth = 90.0 - angle
+        # print('first q')
+    #second quadrant
+    elif (x2>x1) and (y2<=y1):
+        azimuth = angle + 90.0
+        # print('second q')
+    #third quadrant
+    elif (x2<=x1) and (y2<y1):
+        azimuth = 270.0 - angle
+        # print('third q')
+    #fourth quadrant
+    else:
+        azimuth = 270.0 + angle
+        # print('fourth q')
+
+    return azimuth
+
+
+def calcPerpProfile(orig_strike, profile_length, profile_width, center_point): 
+    '''calculate a profile perpendicular to a line from a fault strike and a center point.
+    return the profile_line as LineString and profile_swath as Polygon
+    orig_strike of fault in degrees
+    profile_length in meters = TOTAL length
+    profile_width in meters = TOTAL width
+    center_point as (x1,y1)
+    returns profile_line, profile_swath'''
+    
+    
+    
+    profile_strike = orig_strike + 90
+    profile_angle = np.radians(profile_strike)
+    
+    # calc perp_line start point, profile_length/2 away from center point
+    x = center_point[0] + (profile_length/2) * np.cos(profile_angle)
+    y = center_point[1] + (profile_length/2) * np.sin(profile_angle)
+    startpt = Point(x,y)
+    
+    # calc perp_line end point, profile_length/2 away from center point
+    x = center_point[0] - (profile_length/2) * np.cos(profile_angle)
+    y = center_point[1] - (profile_length/2) * np.sin(profile_angle)
+    endpt = Point(x,y)
+    
+    profile_line = LineString([startpt,endpt])
+    profile_swath = profile_line.buffer(profile_width/2,16,cap_style=3)
+    return profile_line, profile_swath
+
+
+def generateProfiles(shapefile_lines_path, profile_length, profile_width, profile_spacing,plot=True,verbose=False,save=False,prefix='all',folder='./'): #save_shp=False):
+    '''
+    generates profiles perpendicular to lines in a shapefile.
+    optionally plots input shapefile lines and output profile swaths. default is plot=True. 
+    
+    inputs are:
+    shapefile_lines_path - path location of the shapefile. shapefile must be lines. best if in a UTM coordinate system.
+    profile_length - TOTAL length of the profiles in the same units as the shapefile coordinate system (i.e., m if in UTM)
+    profile_width - TOTAL width of the profiles in the same units as the shapefile coordinate system (i.e., m if in UTM)
+    profile_spacing - distance between each profile in the same units as the shapefile coordinate system (i.e., m if in UTM)
+    
+    outputs are:
+    profile_swaths = geopandas geodataframe of POLYGON features, the profile swath.
+    profile_lines = geopandas geodataframe of LINE features, the centerline of each profile perpendicular to the shapefile lines.
+    profile_centerpts = geopandas geodataframe of POINT features, the midpoint of each profile line along the shapefile lines.
+    
+    exports:
+    swaths, profiles, centerpts in geoJSON format
+    strikes, n_profiles in np format
+    
+    '''
+    
+    print('profiles are',profile_width,'m wide,',profile_length,'m long, and',profile_spacing,'m apart')
+    
+    # read in shapefile lines
+    lines = gpd.read_file(shapefile_lines_path)
+    # Currently, index_parts defaults to True, but in the future, it will default to False to be consistent with Pandas. Use `index_parts=True` to keep the current behavior and True/False to silence the warning.
+    lines = lines.explode(index_parts=True) # this turns multipart lines into single part lines so that profiles remain perpendicular to each line segment if it changes strike...but often doesn't work in Python and might need to do in QGIS first and use the exploded lines shapefile as input file
+    lines = lines.reset_index(drop=True) # reset the index because we just added a bunch of lines
+    print('CRS of shapefile:', lines.crs)
+    
+    # initialize geodataframes to hold ALL swath, profile, center_pt, strike info
+    ## starting with empty dataframes because we don't know the total size yet
+    # this throws a filterwarning that i'm ignoring that you can't initialize a gdf without a CRS...will need to fix eventually
+    all_swaths = gpd.GeoDataFrame(geometry=[], crs=lines.crs)#geometry=gpd.points_from_xy(x,y)) # where x and y = np.zeros(len(lines))...but if start this way will have a bunch of nonesense/empty lines to remove later, but it didn't like it when I tried to start with one point
+    all_profiles = gpd.GeoDataFrame(geometry=[], crs=lines.crs)#geometry=gpd.points_from_xy(x,y))
+    all_centerpts = gpd.GeoDataFrame(geometry=[], crs=lines.crs)#geometry=gpd.points_from_xy(x,y))
+    all_strikes = np.ones(len(lines),dtype=float)
+    all_swath_strikes = np.array([],dtype=float)
+    n_profiles= np.ones(len(lines),dtype=int)
+    all_azimuths = np.ones(len(lines),dtype=float)
+    
+    for i, row in lines.iterrows():
+        line_geom = row.geometry
+        coords = list(line_geom.coords)
+    
+        # initialize per-line storage
+        swaths_list = []
+        profiles_list = []
+        centerpts_list = []
+        strikes_list = []
+        azimuths_list = []
+    
+        for j in range(len(coords) - 1):
+            x1, y1 = coords[j]
+            x2, y2 = coords[j + 1]
+            seg_length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            if seg_length == 0:
+                continue
+            
+            dx = (x2 - x1) / seg_length
+            dy = (y2 - y1) / seg_length
+            
+            # Ensure at least one profile, even on short segments
+            if seg_length < profile_spacing:
+                dists = [seg_length / 2]
+            else:
+                dists = np.arange(profile_spacing / 2, seg_length, profile_spacing)
+            
+            for dist_along in dists:
+                cx = x1 + dx * dist_along
+                cy = y1 + dy * dist_along
+            
+                slope, strike = calcSlopeFrom2Pts(x1, y1, x2, y2)
+                azimuth = calcAzimuthFromNorth(x1, y1, x2, y2)
+            
+                profile_line, profile_swath = calcPerpProfile(strike, profile_length, profile_width, (cx, cy))
+            
+                swaths_list.append(profile_swath)
+                profiles_list.append(profile_line)
+                centerpts_list.append(Point(cx, cy))
+                strikes_list.append(strike)
+                azimuths_list.append(azimuth)
+
+
+    
+        # convert lists to GeoDataFrames
+        swaths = gpd.GeoDataFrame(geometry=swaths_list, crs=lines.crs)
+        profiles = gpd.GeoDataFrame(geometry=profiles_list, crs=lines.crs)
+        center_points = gpd.GeoDataFrame(geometry=centerpts_list, crs=lines.crs)
+        center_points['fault_azimuth'] = azimuths_list  # last segment azimuth; optional: store full list
+    
+        all_swaths = pd.concat([all_swaths, swaths])
+        all_profiles = pd.concat([all_profiles, profiles])
+        all_centerpts = pd.concat([all_centerpts, center_points])
+        all_swath_strikes = np.concatenate([all_swath_strikes, np.array(strikes_list)])
+        all_strikes[i] = np.mean(strikes_list)
+        all_azimuths[i] = np.mean(azimuths_list)
+        n_profiles[i] = len(strikes_list)
+    
+        # reset index because otherwise the index is duplicated for each line in the shapefile
+        all_swaths = all_swaths.reset_index(drop=True)
+        all_profiles = all_profiles.reset_index(drop=True)
+        all_centerpts = all_centerpts.reset_index(drop=True)
+    
+        # ensure profiles have same CRS as input shapefile
+        all_swaths = all_swaths.set_crs(lines.crs)
+        all_profiles = all_profiles.set_crs(lines.crs)
+        all_centerpts = all_centerpts.set_crs(lines.crs)
+    
+    # to plot or not to plot
+    if plot==True:
+        fig,ax = plt.subplots(figsize=(8,8))
+        all_swaths.plot(ax=ax,alpha=.2,color='k')
+        all_profiles.plot(ax=ax,color='k',lw=.5)
+        all_centerpts.plot(ax=ax,color='b')
+        lines.plot(ax=ax,color='r',lw=.75)
+        plt.show()
+
+
+    if save==True:
+        all_swaths.to_file(folder+'%s_swaths_%sprofiles.geojson' %(prefix,sum(n_profiles)), driver='GeoJSON') 
+        all_profiles.to_file(folder+'%s_profiles_%sprofiles.geojson' %(prefix,sum(n_profiles)), driver='GeoJSON')  
+        all_centerpts.to_file(folder+'%s_centerpts_%sprofiles.geojson' %(prefix,sum(n_profiles)), driver='GeoJSON') 
+        np.save(folder+'%s_swath_strikes_%sprofiles.npy' %(prefix,sum(n_profiles)),all_swath_strikes, allow_pickle=True,)
+        np.save(folder+'%s_strikes_%sprofiles.npy' %(prefix,sum(n_profiles)),all_strikes,allow_pickle=True,)
+        np.save(folder+'%s_azimuths_%sprofiles.npy' %(prefix,sum(n_profiles)),all_azimuths,allow_pickle=True,)
+        np.save(folder+'%s_n_profiles_%sprofiles.npy' %(prefix,sum(n_profiles)),n_profiles,allow_pickle=True,)
+
+    return all_swaths, all_swath_strikes, all_profiles, all_centerpts, all_strikes, n_profiles, all_azimuths
+
+# Raster Sampler
+
+
+
+def sample_swath(raster, fault_point_x, fault_point_y, fault_az_deg, profile_length, swath_width, resolution,crs):
+    '''
+    Raster must be opened by rasterio.open(path,masked=True).
+    '''
+    P = Proj(crs)
+    G = Geod(ellps='WGS84')
+
+    lon, lat = P(fault_point_x,
+                 fault_point_y, inverse=True)
+    
+    lon1, lat1, _ = G.fwd(
+        lon, lat, fault_az_deg - 90,
+        profile_length / 2
+    )
+    lon2, lat2, _ = G.fwd(
+        lon, lat, fault_az_deg + 90,
+        profile_length / 2
+    )
+
+    tmppts = np.array(
+        G.npts(
+            lon1=lon1, lat1=lat1,
+            lon2=lon2, lat2=lat2,
+            npts=profile_length/resolution
+        )
+    )
+
+    starts = G.fwd(
+        tmppts[:, 0], tmppts[:, 1],
+        [fault_az_deg] * len(tmppts),
+        [swath_width / 2] * len(tmppts)
+    )
+    ends = G.fwd(
+        tmppts[:, 0], tmppts[:, 1],
+        [fault_az_deg + 180] * len(tmppts),
+        [swath_width / 2] * len(tmppts)
+    )
+
+    map_object = np.array(list(map(
+        lambda lon1, lat1, lon2, lat2:
+        G.npts(lon1, lat1, lon2, lat2, swath_width / resolution),
+        starts[0], starts[1], ends[0], ends[1]
+    )))
+
+    pts = map_object.reshape(
+        len(starts[0]) * int(swath_width / resolution), 2
+    )
+    pts = P(pts[:, 0], pts[:, 1])
+    pts = np.column_stack(pts)
+
+    dist = np.arange(-profile_length / 2,
+                     profile_length / 2, resolution)
+    dists = np.repeat(dist, int(swath_width / resolution))
+
+    raster_samps = np.array([x for x in raster.sample(pts)])
+    raster_samps[raster_samps == -9999] = np.nan
+    return raster_samps, pts, dists
+
+def projectParPerp(ns, ew, az):
+    theta = (az)*np.pi/180
+    par = ns*np.cos(theta)+ew*np.sin(theta)
+    perp = -1*ns*np.sin(theta)+ew*np.cos(theta)
+    return par.flatten(), perp.flatten()
+
+def erf_function_noslope(x, a, b, c, ws):
+    '''From Milliner et al., 2021
+    The solved parameters include the intercept (a), the total fault displacement (b), 
+    the fault location (c), the shear width (ws)'''
+    return a+b/2*erf((x-c)/(ws*np.sqrt(2)))
+
+def erf_function(x, a, b, c, ws, m):
+    '''From Milliner et al., 2021
+    The solved parameters include the intercept (a), the total fault displacement (b), 
+    the fault location (c), the shear width (ws), and the slope (m),'''
+    return a+b/2*erf((x-c)/(ws*np.sqrt(2)))+m*x
+
+def erf_function_twoslope(x, a, b, c, ws, m1, m2):
+    '''From Milliner et al., 2021
+    The solved parameters include the intercept (a), the total fault displacement (b), 
+    the fault location (c), the shear width (ws), and the slope (m),'''
+    return a+b/2*erf((x-c)/(ws*np.sqrt(2)))+ np.where(x > c, m2 * (x - c), m1 * (x - c)) 
+
+# arctan function with independent slopes for upper and lower asymptotes
+
+def fit_arctan_independent_slopes(x, a, b, c, m1, m2, d): 
+    '''
+    ( m_1 ) is the slope of the upper asymptote,
+    ( m_2 ) is the slope of the lower asymptote
+    ( a ) is the amplitude,
+    ( b ) controls the steepness of the curve,
+    ( c ) is the x-value of the midpoint,
+    ( d ) is the vertical shift
+    '''
+    return a * np.arctan(b * (x - c)) + np.where(x >= c, m1 * (x - c), m2 * (x - c)) + d
+
+
+def erf_curve_fit(samps, dists, bounds=None):
+    if bounds is None:
+        bounds = ((-np.inf,np.nanmin(samps)*2,dists.min(),0,-np.inf),(np.inf,np.nanmax(samps)*2,dists.max(),2*dists.max(),np.inf))
+    # Try fit
+    try:
+        popt, pcov = curve_fit(erf_function, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=10000,bounds=bounds)
+        intercept = popt[0]
+        total_offset = popt[1]
+        fault_loc = popt[2]
+        shear_width = popt[3]
+        total_offset_sig = np.sqrt(pcov[1, 1])
+        fault_loc_sig = np.sqrt(pcov[2, 2])
+        shear_width_sig = np.sqrt(pcov[3, 3])
+        slope = popt[4]
+        slope_sig = np.sqrt(pcov[4, 4])
+    except:
+        print('Fit failed.')
+        return (np.nan,) * 9
+    return (intercept,total_offset, fault_loc, shear_width, total_offset_sig, fault_loc_sig, shear_width_sig, slope, slope_sig)
+
+def erf_curve_fit_noslope(samps, dists, bounds=None):
+    if bounds is None:
+        bounds = ((-np.inf,np.nanmin(samps)*2,dists.min(),0),(np.inf,np.nanmax(samps)*2,dists.max(),2*dists.max()))
+    # Try fit
+    try:
+        popt, pcov = curve_fit(erf_function_noslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=10000,bounds=bounds)
+        intercept = popt[0]
+        total_offset = popt[1]
+        fault_loc = popt[2]
+        shear_width = popt[3]
+        total_offset_sig = np.sqrt(pcov[1, 1])
+        fault_loc_sig = np.sqrt(pcov[2, 2])
+        shear_width_sig = np.sqrt(pcov[3, 3])
+    except:
+        print('Fit failed.')
+        return (np.nan,) * 7
+    return (intercept,total_offset, fault_loc, shear_width, total_offset_sig, fault_loc_sig, shear_width_sig)
+
+def erf_curve_fit_twoslope(samps, dists, bounds=None):
+    if bounds is None:
+        max_diff = np.nanmax(samps)-np.nanmin(samps)
+        max_width = (dists.max() if dists.max() < 5000 else 5000)
+        # a, b, c, ws, m1, m2
+        bounds = ((-np.inf,-max_diff,dists.min()/2,0,-max_diff/np.nanmax(dists),-max_diff/np.nanmax(dists)),
+                  (np.inf,max_diff,dists.max()/2,max_width,max_diff/np.nanmax(dists),max_diff/np.nanmax(dists)))
+    # Try fit
+    try:
+        popt, pcov = curve_fit(erf_function_twoslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=10000,bounds=bounds)
+        intercept = popt[0]
+        fault_loc_offset = popt[1]
+        fault_loc = popt[2]
+        shear_width = popt[3]
+        total_offset_sig = np.sqrt(pcov[1, 1])
+        fault_loc_sig = np.sqrt(pcov[2, 2])
+        shear_width_sig = np.sqrt(pcov[3, 3])
+        slope1 = popt[4]
+        slope1_sig = np.sqrt(pcov[4, 4])
+        slope2 = popt[5]
+        slope2_sig = np.sqrt(pcov[5, 5])
+        of1, of2 = erf_function_twoslope([fault_loc+shear_width*2,fault_loc-shear_width*2], *popt)
+        fzw_offset = of2 - of1
+        full_erf = erf_function_twoslope(dists, *popt)
+        max_offset = full_erf.max() - full_erf.min()
+        ep_offset = full_erf[1] - full_erf[-1]
+        print('Returning intercept, offset at fault location, shifted fault location, 1/2 1 std shear width (4 shear width is 2 sigma \
+              fault zone width), uncertainties for those parameters, then lhs slope and uncertainty, and rhs slope and uncertainty). \
+              Other derived parameters are the offset at the edges of the 2 sigma shear zone, the max offset, and the endpoint offset.\
+                The latter two are from left to right across profile.')
+    except:
+        print('Fit failed.')
+        return (np.nan,) * 14
+    return (intercept,fault_loc_offset, fault_loc, shear_width, total_offset_sig, fault_loc_sig, shear_width_sig, slope1, slope1_sig, slope2, slope2_sig, fzw_offset, max_offset, ep_offset)
