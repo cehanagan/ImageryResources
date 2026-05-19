@@ -4,58 +4,55 @@ unzip it
 
 dem_geoid --geoid egm2008 --reverse-adjustment output_hh.tif -o dem
 
-wv_correct ./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003.TIF ./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003.XML ./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003.wv_correct.TIF
-wv_correct ./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009.TIF ./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009.XML ./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009.wv_correct.TIF
 
 ###################
 #!/bin/bash
+
+path1="./200011941049_01/200011941049_01_P005_PAN/13NOV12213550-P1BS-200011941049_01_P005"
+path2="./200011941049_01/200011941049_01_P011_PAN/13NOV12213658-P1BS-200011941049_01_P011"
+
+wv_correct "${path1}.TIF" "${path1}.XML" "${path1}.wv_correct.TIF"
+wv_correct "${path2}.TIF" "${path2}.XML" "${path2}.wv_correct.TIF"
+
 bundle_adjust --ip-per-image 10000 -t dg --camera-weight 0 --tri-weight 0.1 --tri-robust-threshold 0.1 \
-    ./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003.wv_correct.TIF \
-    ./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009.wv_correct.TIF \
-    ./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003.XML \
-    ./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009.XML \
-    -o dg_csm_model_refined/run
+        "${path1}.wv_correct.TIF" \
+        "${path2}.wv_correct.TIF" \
+        "${path1}.XML" \
+        "${path2}.XML" \
+        -o dg_csm_model_refined/run
 
 # Set your projection 
 proj="+proj=utm +zone=5 +datum=WGS84 +units=m +no_defs"
-
 # List of prefixes
-prefixes=("./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003.wv_correct" \
-    "./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009.wv_correct")
-
-prefixes2=("./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003" \
-    "./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009")
-
+prefixes=("${path1}.wv_correct" \
+        "${path2}.wv_correct")
+prefixes2=("${path1}" \
+        "${path2}")
 # Loop over each prefix and run mapproject
 # Loop over both arrays using index
 for i in "${!prefixes[@]}"; do
-  IMG="${prefixes[$i]}"
-  XMLPREFIX="${prefixes2[$i]}"
-
-  echo "Processing $IMG with XML from $XMLPREFIX..."
-
-  mapproject -t rpc --threads 60 \
-    --t_projwin 426848.05 6280562.76 439767.82 6288490.82 \ 
-    --tr 0.5 \
-    --t_srs "$proj" \
-    --bundle-adjust-prefix dg_csm_model_refined/run \
-    ./dem-adj.tif "${IMG}.TIF" "${XMLPREFIX}.XML" "${IMG}.map.TIF"
+        IMG="${prefixes[$i]}"
+        XMLPREFIX="${prefixes2[$i]}"
+        echo "Processing $IMG with XML from $XMLPREFIX..."
+        mapproject -t rpc --threads 60 \
+                --t_projwin 426848.05 6280562.76 439767.82 6288490.82 \
+                --tr 0.5 \
+                --t_srs "$proj" \
+                --bundle-adjust-prefix dg_csm_model_refined/run \
+                ./dem-adj.tif "${IMG}.TIF" "${XMLPREFIX}.XML" "${IMG}.map.TIF"
 done
-
-
 parallel_stereo -t dg --max-disp-spread 200 --processes 64 \
---accept-provided-mapproj-dem --alignment-method none \
---stereo-algorithm asp_bm  \
---subpixel-mode 3 \
---bundle-adjust-prefix dg_csm_model_refined/run \
-./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003.wv_correct.map.TIF \
-./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009.wv_correct.map.TIF \
-./200011916615_01_P003_PAN/22APR24220031-P1BS-200011916615_01_P003.XML \
-./200011916615_01_P009_PAN/22APR24220212-P1BS-200011916615_01_P009.XML \
-run ./dem-adj.tif
+  --accept-provided-mapproj-dem --alignment-method none \
+  --stereo-algorithm asp_bm  \
+  --subpixel-mode 3 \
+  --bundle-adjust-prefix dg_csm_model_refined/run \
+  "${path1}.wv_correct.map.TIF" \
+  "${path2}.wv_correct.map.TIF" \
+  "${path1}.XML" \
+  "${path2}.XML" \
+  ./dem-adj.tif
 
 proj="+proj=utm +zone=5 +datum=WGS84 +units=m +no_defs"
-
 point2dem --t_srs "$proj" --tr 0.5 --dem-hole-fill-len 100 --orthoimage-hole-fill-len 100 run-PC.tif --orthoimage run-L.tif
 
 ######################
