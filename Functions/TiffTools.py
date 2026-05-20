@@ -10,6 +10,8 @@ import os
 from scipy import ndimage
 from scipy.special import erf
 from scipy.optimize import curve_fit
+from scipy.interpolate import griddata
+
 
 from pyproj import Proj, Geod
 import geopandas as gpd
@@ -195,7 +197,13 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     print('Writing to', outname)
     # Create new dataset and band for writing
     driver = gdal.GetDriverByName('GTiff')
-    new_ds = driver.Create(outname, im.RasterXSize, im.RasterYSize, 1, gdal.GDT_Float32)
+    # Define creation options
+    creation_options = [
+        'COMPRESS=LZW',      # LZW compression
+        'ZLEVEL=9',          # Maximum compression level
+        'BIGTIFF=YES'        # Enable BigTIFF support
+    ]
+    new_ds = driver.Create(outname, im.RasterXSize, im.RasterYSize, 1, gdal.GDT_Float32, options=creation_options)
     new_ds.SetProjection(im.GetProjection())
     new_ds.SetGeoTransform(im.GetGeoTransform())
     new_band = new_ds.GetRasterBand(1)
@@ -884,6 +892,45 @@ def sample_swath(raster, fault_point_x, fault_point_y, fault_az_deg, profile_len
     raster_samps[raster_samps == -9999] = np.nan
     return raster_samps, pts, dists
 
+
+def sample_swath_points(point_coords, point_values, fault_point_x, fault_point_y, 
+                        fault_az_deg, profile_length, swath_width, crs):
+    '''
+    Filters original points to only those within the swath box.
+    Returns: values, original_coords, and distance along the profile.
+    '''
+    P = Proj(crs)
+    G = Geod(ellps='WGS84')
+
+    # 1. Define the Profile Line (Same as your tmppts logic)
+    lon, lat = P(fault_point_x, fault_point_y, inverse=True)
+    
+    # Endpoints of the profile line (perpendicular to fault azimuth)
+    lon1, lat1, _ = G.fwd(lon, lat, fault_az_deg - 90, profile_length / 2)
+    lon2, lat2, _ = G.fwd(lon, lat, fault_az_deg + 90, profile_length / 2)
+    
+    # Project back to your CRS to work in meters
+    p1 = np.array(P(lon1, lat1))
+    p2 = np.array(P(lon2, lat2))
+    profile_line = LineString([p1, p2])
+
+    # 2. Create the Swath "Box" for filtering
+    # Buffer the line by half the swath width
+    swath_polygon = profile_line.buffer(swath_width / 2, cap_style=2) # cap_style=2 is flat
+
+    # 3. Filter points that are inside the box
+    # Using a mask for efficiency
+    mask = [swath_polygon.contains(Point(x, y)) for x, y in point_coords]
+    
+    valid_coords = point_coords[mask]
+    valid_values = point_values[mask]
+
+    # 4. Calculate "distance along profile" for the remaining points
+    # This replaces your 'dists' array with the actual projection of the point onto the line
+    dists = np.array([profile_line.project(Point(p)) - (profile_length / 2) for p in valid_coords])
+
+    return valid_values, valid_coords, dists
+
 def projectParPerp(ns, ew, az):
     theta = (az)*np.pi/180
     par = ns*np.cos(theta)+ew*np.sin(theta)
@@ -944,10 +991,11 @@ def erf_curve_fit(samps, dists, bounds=None):
 
 def erf_curve_fit_noslope(samps, dists, bounds=None):
     if bounds is None:
+        # a, b, c, ws,
         bounds = ((-np.inf,np.nanmin(samps)*2,dists.min(),0),(np.inf,np.nanmax(samps)*2,dists.max(),2*dists.max()))
     # Try fit
     try:
-        popt, pcov = curve_fit(erf_function_noslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=10000,bounds=bounds)
+        popt, pcov = curve_fit(erf_function_noslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=1000000,bounds=bounds,nan_policy='omit')
         intercept = popt[0]
         total_offset = popt[1]
         fault_loc = popt[2]
@@ -963,17 +1011,18 @@ def erf_curve_fit_noslope(samps, dists, bounds=None):
 def erf_curve_fit_twoslope(samps, dists, bounds=None):
     if bounds is None:
         max_diff = np.nanmax(samps)-np.nanmin(samps)
-        max_width = (dists.max() if dists.max() < 5000 else 5000)
+        max_width = (dists.max()/2 if dists.max() < 5000 else 5000)
         # a, b, c, ws, m1, m2
-        bounds = ((-np.inf,-max_diff,dists.min()/2,0,-max_diff/np.nanmax(dists),-max_diff/np.nanmax(dists)),
-                  (np.inf,max_diff,dists.max()/2,max_width,max_diff/np.nanmax(dists),max_diff/np.nanmax(dists)))
+        bounds = ((-np.inf,-max_diff,dists.min(),0,-max_diff/np.nanmax(dists)/2,-max_diff/np.nanmax(dists)/2),
+                  (np.inf,max_diff,dists.max(),max_width,max_diff/np.nanmax(dists)/2,max_diff/np.nanmax(dists)/2))
     # Try fit
     try:
-        popt, pcov = curve_fit(erf_function_twoslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=10000,bounds=bounds)
+        popt, pcov = curve_fit(erf_function_twoslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=1000000,bounds=bounds,nan_policy='omit')
         intercept = popt[0]
         fault_loc_offset = popt[1]
         fault_loc = popt[2]
         shear_width = popt[3]
+        intercept_sig = np.sqrt(pcov[0, 0])
         total_offset_sig = np.sqrt(pcov[1, 1])
         fault_loc_sig = np.sqrt(pcov[2, 2])
         shear_width_sig = np.sqrt(pcov[3, 3])
@@ -981,16 +1030,36 @@ def erf_curve_fit_twoslope(samps, dists, bounds=None):
         slope1_sig = np.sqrt(pcov[4, 4])
         slope2 = popt[5]
         slope2_sig = np.sqrt(pcov[5, 5])
-        of1, of2 = erf_function_twoslope([fault_loc+shear_width*2,fault_loc-shear_width*2], *popt)
+        of1, of2 = erf_function_twoslope([fault_loc-shear_width*2,fault_loc+shear_width*2], *popt)
         fzw_offset = of2 - of1
         full_erf = erf_function_twoslope(dists, *popt)
-        max_offset = full_erf.max() - full_erf.min()
-        ep_offset = full_erf[1] - full_erf[-1]
-        print('Returning intercept, offset at fault location, shifted fault location, 1/2 1 std shear width (4 shear width is 2 sigma \
-              fault zone width), uncertainties for those parameters, then lhs slope and uncertainty, and rhs slope and uncertainty). \
-              Other derived parameters are the offset at the edges of the 2 sigma shear zone, the max offset, and the endpoint offset.\
-                The latter two are from left to right across profile.')
+        ep_offset = full_erf[-1] - full_erf[1] 
+        print('Returning intercept, offset at fault location, shifted fault location, 1/2 1 std shear width (4 shear width is 2 sigma \n \
+              fault zone width), uncertainties for those parameters, then lhs slope and uncertainty, and rhs slope and uncertainty). \n \
+              Other derived parameters are the offset at the edges of the 2 sigma shear zone, the max offset, and the endpoint offset.\n \
+              The latter two are from left to right across profile.')
     except:
         print('Fit failed.')
         return (np.nan,) * 14
-    return (intercept,fault_loc_offset, fault_loc, shear_width, total_offset_sig, fault_loc_sig, shear_width_sig, slope1, slope1_sig, slope2, slope2_sig, fzw_offset, max_offset, ep_offset)
+    return (intercept,fault_loc_offset, fault_loc, shear_width, total_offset_sig, fault_loc_sig, shear_width_sig, slope1, slope1_sig, slope2, slope2_sig, fzw_offset, ep_offset, intercept_sig)
+
+def rolling_dist_median(dist, vel, window_m):
+    half_w = window_m / 2
+    npts = len(vel)
+    # Prepare arrays for results
+    rolling_median = np.full(npts, np.nan)
+    rolling_mad = np.full(npts, np.nan)
+
+    # Compute rolling median in a *distance window*
+    for i in range(npts):
+        # distance window: +/- 500 m
+        lo = dist[i] - half_w
+        hi = dist[i] + half_w
+
+        mask = (dist >= lo) & (dist <= hi)
+        vals = vel[mask]
+
+        if len(vals) > 0:
+            rolling_median[i] = np.median(vals)
+            rolling_mad[i] = np.median(np.abs(vals - np.median(vals)))
+    return rolling_median, rolling_mad
