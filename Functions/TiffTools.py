@@ -1008,19 +1008,25 @@ def erf_curve_fit_noslope(samps, dists, bounds=None):
         return (np.nan,) * 7
     return (intercept,total_offset, fault_loc, shear_width, total_offset_sig, fault_loc_sig, shear_width_sig)
 
-def erf_curve_fit_twoslope(samps, dists, bounds=None):
+def erf_curve_fit_twoslope(samps, dists, bounds=None,p0=None):
+    # center the data 
+    samps_mean = (np.nanmax(samps)+np.nanmin(samps))/2
+    dists_mean = (np.nanmax(dists)+np.nanmin(dists))/2
+    samps = samps - samps_mean
+    dists = dists - dists_mean
     if bounds is None:
         max_diff = np.nanmax(samps)-np.nanmin(samps)
         max_width = (dists.max()/2 if dists.max() < 5000 else 5000)
         # a, b, c, ws, m1, m2
-        bounds = ((-np.inf,-max_diff,dists.min(),0,-max_diff/np.nanmax(dists)/2,-max_diff/np.nanmax(dists)/2),
-                  (np.inf,max_diff,dists.max(),max_width,max_diff/np.nanmax(dists)/2,max_diff/np.nanmax(dists)/2))
+        bounds = ((-np.inf,-max_diff,dists.min(),0,-max_diff/(dists.max()-dists.min())/2/5,-max_diff/(dists.max()-dists.min())/2/5),
+                  (np.inf,max_diff,dists.max(),max_width,max_diff/(dists.max()-dists.min())/2/5,max_diff/(dists.max()-dists.min())/2/5))
+        print('Bounds: Intercept, offset, fault location, 1/4 shear width, slope1, slope2\n',bounds)
     # Try fit
     try:
-        popt, pcov = curve_fit(erf_function_twoslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=1000000,bounds=bounds,nan_policy='omit')
-        intercept = popt[0]
+        popt, pcov = curve_fit(erf_function_twoslope, dists[~np.isnan(samps)], samps[~np.isnan(samps)], maxfev=1e9,ftol=1e-9,bounds=bounds,p0=p0,nan_policy='omit')
+        intercept = popt[0] + samps_mean
         fault_loc_offset = popt[1]
-        fault_loc = popt[2]
+        fault_loc = popt[2] + dists_mean
         shear_width = popt[3]
         intercept_sig = np.sqrt(pcov[0, 0])
         total_offset_sig = np.sqrt(pcov[1, 1])
