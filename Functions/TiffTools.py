@@ -477,6 +477,7 @@ def micmacStackUD(infolderlist,outfolder):
     return 'Done!'
 
 def projectDisp(ewtif,nstif,azimuth,mask=None,partif='ParallelDisp.tif',perptif='PerpendicularDisp.tif'):
+    # NS axis = Parallel axis
     ewds = gdal.Open(ewtif)
 
     if ewds.GetRasterBand(1).GetNoDataValue() is None:
