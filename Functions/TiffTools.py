@@ -157,7 +157,7 @@ def dilation_curl_2d(vector_fieldx, vector_fieldy):
 
     return dilation, curl
 
-def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None,nodata=None):
+def micmacExportOld(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None,nodata=None):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
        Optional SRS code and bounds [ulx, uly, lrx, lry]. Cutline can be used to crop irregular shapes.
        Output no data value is -9999.'''
@@ -208,6 +208,8 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     new_ds.SetGeoTransform(im.GetGeoTransform())
     new_band = new_ds.GetRasterBand(1)
     new_band.WriteArray(grayscale_band)
+    new_band.SetNoDataValue(nodata)
+    new_band.FlushCache()
     
     # Set optional parameters
     if a_ullr is not None:
@@ -220,14 +222,165 @@ def micmacExport(tiffile, outname=None, srs=None, outres=None, interp=None, a_ul
     else:
         cropToCutline = True
     # Warp the dataset
-    imout = gdal.Warp(outname, new_ds, xRes=outres[0], yRes=outres[1],
-                      outputBounds=bounds,cutlineDSName=cutlineDSName,cropToCutline=cropToCutline,dstSRS=srs, resampleAlg=interp,
-                      dstNodata=-9999)
+    imout = gdal.Warp(
+        outname,
+        new_ds,
+        xRes=outres[0],
+        yRes=outres[1],
+        outputBounds=bounds,
+        cutlineDSName=cutlineDSName,
+        cropToCutline=cropToCutline,
+        dstSRS=srs,
+        resampleAlg=interp,
+        srcNodata=nodata,
+        dstNodata=nodata
+        )
     # Close files
     imout = None
     new_ds = None
     im = None
     return 
+
+def micmacExport(
+    tiffile,
+    outname=None,
+    srs=None,
+    outres=None,
+    interp=None,
+    a_ullr=None,
+    cutlineDSName=None,
+    nodata=None
+    ):
+    '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
+       Optional SRS code and bounds [ulx, uly, lrx, lry]. Cutline can be used to crop irregular shapes.
+       Output no data value is -9999.'''
+
+    im = gdal.Open(tiffile)
+    if im is None:
+        print("Error: Unable to open the input file.")
+        return None, None
+
+    if outname is None:
+        outname = tiffile
+    if srs is None:
+        srs = im.GetProjection()
+    if outres is None:
+        outres = [im.GetGeoTransform()[1], im.GetGeoTransform()[-1]]
+    if interp is None:
+        interp = 'near'
+
+    # -------------------------
+    # FIX 1: robust nodata handling
+    # -------------------------
+    band = im.GetRasterBand(1)
+    src_nodata = band.GetNoDataValue()
+
+    if nodata is None:
+        nodata = -9999
+
+    # ============================================================
+    # READ DATA
+    # ============================================================
+
+    if im.RasterCount >= 3:
+        print('Computing Gray from RGB values')
+
+        R = im.GetRasterBand(1).ReadAsArray().astype(np.float32)
+        G = im.GetRasterBand(2).ReadAsArray().astype(np.float32)
+        B = im.GetRasterBand(3).ReadAsArray().astype(np.float32)
+
+        # FIX 2: safe nodata masking (handles NaNs + nodata)
+        valid = (
+            np.isfinite(R) &
+            np.isfinite(G) &
+            np.isfinite(B)
+        )
+
+        if src_nodata is not None:
+            valid &= (R != src_nodata) & (G != src_nodata) & (B != src_nodata)
+
+        grayscale_band = np.zeros_like(R, dtype=np.float32)
+        grayscale_band[:] = nodata
+
+        grayscale_band[valid] = (
+            0.2989 * R[valid] +
+            0.5870 * G[valid] +
+            0.1140 * B[valid]
+        )
+
+    else:
+        grayscale_band = im.GetRasterBand(1).ReadAsArray().astype(np.float32)
+
+        valid = np.isfinite(grayscale_band)
+        if src_nodata is not None:
+            valid &= (grayscale_band != src_nodata)
+
+        grayscale_band[~valid] = nodata
+
+    # ============================================================
+    # WRITE RASTER
+    # ============================================================
+
+    print('Writing to', outname)
+
+    driver = gdal.GetDriverByName('GTiff')
+
+    creation_options = [
+        'COMPRESS=LZW',
+        'ZLEVEL=9',
+        'BIGTIFF=YES'
+    ]
+
+    new_ds = driver.Create(
+        outname,
+        im.RasterXSize,
+        im.RasterYSize,
+        1,
+        gdal.GDT_Float32,
+        options=creation_options
+    )
+
+    new_ds.SetProjection(srs)
+    new_ds.SetGeoTransform(im.GetGeoTransform())
+
+    new_band = new_ds.GetRasterBand(1)
+    new_band.WriteArray(grayscale_band)
+
+    # FIX 3: explicitly set nodata everywhere it matters
+    new_band.SetNoDataValue(nodata)
+    new_band.FlushCache()
+    new_ds.FlushCache()
+
+    # ============================================================
+    # OPTIONAL WARP
+    # ============================================================
+
+    if a_ullr is not None:
+        bounds = [a_ullr[0], a_ullr[3], a_ullr[2], a_ullr[1]]
+    else:
+        bounds = None
+
+    cropToCutline = cutlineDSName is not None
+
+    imout = gdal.Warp(
+        outname,
+        new_ds,
+        xRes=outres[0],
+        yRes=outres[1],
+        outputBounds=bounds,
+        cutlineDSName=cutlineDSName,
+        cropToCutline=cropToCutline,
+        dstSRS=srs,
+        resampleAlg=interp,
+        srcNodata=nodata,
+        dstNodata=nodata
+    )
+
+    imout = None
+    new_ds = None
+    im = None
+
+    return
   
 def micmacPostProcessing(folder:str,
                          prefiles:str,
