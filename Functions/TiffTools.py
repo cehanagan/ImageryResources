@@ -129,9 +129,9 @@ def curl_2d(vector_fieldx,vector_fieldy):
 
     return curl
 
-def dilation_curl_2d(vector_fieldx, vector_fieldy):
+def dilatation_curl_maxshear_2d(vector_fieldx, vector_fieldy):
     """
-    Compute the dilation (divergence) and curl of a 2D vector field.
+    Compute the dilatation (divergence) and curl of a 2D vector field.
 
     Parameters:
         vector_fieldx (numpy.ndarray): 2D array of the x-component of the vector field.
@@ -155,7 +155,9 @@ def dilation_curl_2d(vector_fieldx, vector_fieldy):
     # Compute curl (out-of-plane scalar curl)
     curl = duy_dx - dux_dy
 
-    return dilation, curl
+    max_shear = 0.5 * (duy_dx + dux_dy)
+
+    return dilation, curl, max_shear
 
 def micmacExportOld(tiffile, outname=None, srs=None, outres=None, interp=None, a_ullr=None,cutlineDSName=None,nodata=None):
     '''Extracts the 1st band of a tif image and saves as float32 greyscale image for micmac ingest.
