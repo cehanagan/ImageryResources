@@ -386,7 +386,9 @@ def micmacExport(
   
 def micmacPostProcessing(folder:str,
                          prefiles:str,
-                         outprefix:str=None):
+                         outprefix:str=None,
+                         corr_mask:str=False,
+                         corr_val:float=0.5):
     '''
     Takes a MicMac output folder, and uses gdal to calculate NS and EW displacement tifs, and corresponding correlation files.
     
@@ -396,6 +398,10 @@ def micmacPostProcessing(folder:str,
     :param type: str
     :param dtype: gdal data type, defaults to gdal.GDT_Float32
     :type dtype: int
+    :param corr_mask: whether to apply mask by correlation score.
+    :param type: bool
+    :param corr_val: value to apply correlation score mask. Masks values below value.
+    :param type: float
     '''
     refim1 = gdal.Open(prefiles[0])
     refim2 = gdal.Open(prefiles[1])
@@ -406,10 +412,25 @@ def micmacPostProcessing(folder:str,
         print('Setting nodata value to -9999, because reference had no specified value.')
         refimNodata = -9999
     nodata_mask = ((refim1.GetRasterBand(1).ReadAsArray() == refimNodata) | (refim2.GetRasterBand(1).ReadAsArray() == refimNodata))
+
+    # Correlation file
+    correlds = gdal.Open(folder+'Correl_LeChantier_Num_5.tif')
+    correl = (correlds.GetRasterBand(1).ReadAsArray()-127.5)/127.5
+    # Mask NoData values, considering only non-Nodata pixels
+    if corr_mask == True:
+        cmask = ((correl < corr_val) & (correl > -9990))
+        nodata_mask = (nodata_mask | (cmask))
+    correl[nodata_mask] = -9999
+    print('Saving',outprefix+'Correlmicmac.tif')
+    save_geotiff(correl, outprefix+'Correlmicmac.tif', geotransform=gt, projection=refim1.GetProjection(),
+                 nodata=-9999)
+    correlds = None
+
     print('Nodata value for mask:',refimNodata)
     if outprefix is None:
         outprefix = folder
     print(f'Setting nodata value to -9999')
+
     # NS
     px2ds = gdal.Open(folder+'Px2_Num5_DeZoom1_LeChantier.tif')
     px2 = px2ds.GetRasterBand(1).ReadAsArray() * 0.05 * -1*res
@@ -431,15 +452,6 @@ def micmacPostProcessing(folder:str,
                  nodata=-9999)
     px1ds = None
 
-    # Correlation file
-    correlds = gdal.Open(folder+'Correl_LeChantier_Num_5.tif')
-    correl = (correlds.GetRasterBand(1).ReadAsArray()-127.5)/127.5
-    # Mask NoData values, considering only non-Nodata pixels
-    correl[nodata_mask] = -9999
-    print('Saving',outprefix+'Correlmicmac.tif')
-    save_geotiff(correl, outprefix+'Correlmicmac.tif', geotransform=gt, projection=refim1.GetProjection(),
-                 nodata=-9999)
-    correlds = None
     refim = None
     return 
 
