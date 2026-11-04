@@ -50,7 +50,7 @@ runconfig:
             product_path: product_path
 
             # Directory where SAS can write temporary data
-            scratch_path: .
+            scratch_path: /Users/chanagan/Downloads/Panama2026/NISAR_ASF/isce3_scratch/
 
             # SAS writes output product to the following file. PGE may rename.
             # After the SAS completes, the PGE wrapper renames the product file
@@ -70,7 +70,7 @@ runconfig:
             qa_output_dir: ./qa
 
         primary_executable:
-            product_type: ROFF_GOFF
+            product_type: GOFF
             product_version:
                 rifg_version:
                 roff_version:
@@ -145,7 +145,7 @@ runconfig:
                 y_snap:
 
                 # OPTIONAL - Same as input DEM if not provided.
-                output_epsg:
+                output_epsg: 32617
 
                 # OPTIONAL - Spacing between pixels, in same units as output EPSG.
                 # If not provided, spacing values will be taken from provided DEM.
@@ -183,14 +183,14 @@ runconfig:
                 # OPTIONAL - Can control with absolute values or with snap values
                 top_left:
                     # OPTIONAL - Set top-left y in same units as output EPSG
-                    y_abs:
+                    y_abs: 842730
                     # OPTIONAL - Set top-left x in same units as output EPSG
-                    x_abs:
+                    x_abs: 499477
 
                 # OPTIONAL - Can control with absolute values or with snap values
                 bottom_right:
-                    y_abs:
-                    x_abs:
+                    y_abs: 805744
+                    x_abs: 574067
 
                 # OPTIONAL - Set lines to be processed per block
                 lines_per_block: 1000
