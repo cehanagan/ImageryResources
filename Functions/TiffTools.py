@@ -999,10 +999,129 @@ def generateProfiles(shapefile_lines_path, profile_length, profile_width, profil
     return all_swaths, all_swath_strikes, all_profiles, all_centerpts, all_strikes, n_profiles, all_azimuths
 
 # Raster Sampler
+def sample_swath(
+    raster,
+    fault_point_x,
+    fault_point_y,
+    fault_az_deg,
+    profile_length,
+    swath_width,
+    resolution,
+    crs
+):
+    """
+    Sample a raster along a profile perpendicular to a fault,
+    averaging across a specified swath width.
+
+    Parameters
+    ----------
+    raster : rasterio DatasetReader
+        Open rasterio dataset.
+    fault_point_x, fault_point_y : float
+        Fault point coordinates in projected CRS.
+    fault_az_deg : float
+        Fault strike azimuth, clockwise from north.
+    profile_length : float
+        Total profile length in meters.
+    swath_width : float
+        Total swath width in meters.
+    resolution : float
+        Sampling interval in meters.
+    crs : str
+        Projected CRS of the input fault coordinates and raster.
+
+    Returns
+    -------
+    raster_samps : ndarray
+        Sampled raster values (1D).
+    pts : ndarray
+        Sampling point coordinates in raster CRS (N, 2).
+    dists : ndarray
+        Distance along profile for each sampling point (N,).
+    """
+
+    from pyproj import Proj, Geod
+    import numpy as np
+
+    P = Proj(crs)
+    G = Geod(ellps="WGS84")
+
+    # Check raster CRS
+    if raster.crs != rasterio.crs.CRS.from_user_input(crs):
+        raise ValueError(
+            f"CRS mismatch: raster={raster.crs}, input={crs}"
+        )
+
+    # Convert fault location from projected coordinates to lon/lat
+    lon, lat = P(
+        fault_point_x,
+        fault_point_y,
+        inverse=True
+    )
+
+    # Number of samples along profile and across swath
+    n_length = max(1, int(round(profile_length / resolution)))
+    n_width = max(1, int(round(swath_width / resolution)))
+
+    # Profile distances centered on fault point
+    dist = (
+        np.arange(n_length) - (n_length - 1) / 2
+    ) * resolution
+
+    # Across-swath distances centered on profile
+    width_dist = (
+        np.arange(n_width) - (n_width - 1) / 2
+    ) * resolution
+
+    # Generate all sampling points
+    pts_geo = []
+
+    for d in dist:
+
+        # Position along profile, perpendicular to fault
+        lon_p, lat_p, _ = G.fwd(
+            lon,
+            lat,
+            fault_az_deg + 90,
+            d
+        )
+
+        for w in width_dist:
+
+            # Position across swath, parallel to fault
+            lon_s, lat_s, _ = G.fwd(
+                lon_p,
+                lat_p,
+                fault_az_deg,
+                w
+            )
+
+            pts_geo.append([lon_s, lat_s])
+
+    pts_geo = np.asarray(pts_geo)
+
+    # Convert sampling coordinates to raster CRS
+    x, y = P(
+        pts_geo[:, 0],
+        pts_geo[:, 1]
+    )
+
+    pts = np.column_stack((x, y))
+
+    # Sample raster, preserving nodata masks
+    samples = np.ma.asarray(
+        list(raster.sample(pts, masked=True))
+    )
+
+    raster_samps = samples.filled(np.nan).astype(float).flatten()
+
+    # Repeat profile distances for each across-swath sample
+    dists = np.repeat(dist, n_width)
+
+    return raster_samps, pts, dists
 
 
-
-def sample_swath(raster, fault_point_x, fault_point_y, fault_az_deg, profile_length, swath_width, resolution,crs):
+def sample_swath_old(raster, fault_point_x, fault_point_y, fault_az_deg, profile_length, swath_width, resolution,crs):
     '''
     Raster must be opened by rasterio.open(path,masked=True).
     '''
