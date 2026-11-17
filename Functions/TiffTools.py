@@ -1183,8 +1183,8 @@ def erf_curve_fit_twoslope(samps, dists, bounds=None,p0=None):
         max_diff = np.nanmax(samps)-np.nanmin(samps)
         max_width = (dists.max()/2 if dists.max() < 5000 else 5000)
         # a, b, c, ws, m1, m2
-        bounds = ((-np.inf,-max_diff,dists.min(),0,-max_diff/(dists.max()-dists.min())/2/5,-max_diff/(dists.max()-dists.min())/2/5),
-                  (np.inf,max_diff,dists.max(),max_width,max_diff/(dists.max()-dists.min())/2/5,max_diff/(dists.max()-dists.min())/2/5))
+        bounds = ((-np.inf,-max_diff,dists.min(),0,-max_diff/(dists.max()-dists.min())/2,-max_diff/(dists.max()-dists.min())/2),
+                  (np.inf,max_diff,dists.max(),max_width,max_diff/(dists.max()-dists.min())/2,max_diff/(dists.max()-dists.min())/2))
         print('Bounds: Intercept, offset, fault location, 1/4 shear width, slope1, slope2\n',bounds)
     # Try fit
     try:
